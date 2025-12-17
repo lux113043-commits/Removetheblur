@@ -8,8 +8,12 @@ import json
 from pathlib import Path
 from deblur_agent import DeblurAgent
 from PIL import Image
+from PIL import ImageOps
+from PIL import ImageFilter
 import threading
 import time
+from gpt_handler import GPTHandler
+from image_utils import resize_image_smart
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
@@ -32,11 +36,217 @@ processing_status = {
     'session_id': '',
     'input_folder': '',
     'temp_folder': '',
+    'prompt': '',
     'latest_processed': []  # 最新处理的图片列表，用于实时更新
 }
 
+# 尺寸通道处理状态（压缩问题/原图问题）
+resize_status = {
+    'is_processing': False,
+    'mode': '',  # 'compressed' or 'original'
+    'current_file': '',
+    'total_files': 0,
+    'processed_files': 0,
+    'errors': [],
+    'logs': [],  # 任务日志（字符串数组）
+    'sharpen': True,
+    'sharpen_strength': 0.0,
+    'session_id': '',
+    'input_folder': '',
+    'output_folder': '',
+    'target_size': None
+}
 
-def process_images_batch(input_folder, output_folder, session_id=None):
+def _append_resize_log(message: str):
+    """追加尺寸通道日志（限制长度，避免无限增长）"""
+    global resize_status
+    try:
+        ts = time.strftime('%H:%M:%S')
+        resize_status.setdefault('logs', [])
+        resize_status['logs'].append(f"[{ts}] {message}")
+        # 最多保留 300 条
+        if len(resize_status['logs']) > 300:
+            resize_status['logs'] = resize_status['logs'][-300:]
+    except Exception:
+        pass
+
+
+def process_resize_batch(
+    input_folder: str,
+    output_folder: str,
+    target_size: tuple,
+    mode: str,
+    session_id: str = None,
+    sharpen: bool = True,
+    sharpen_strength: float = 0.0
+):
+    """批量缩放图片（高质量重采样），用于“尺寸通道”页"""
+    global resize_status
+
+    try:
+        print(f"\n{'='*60}")
+        print(f"[线程启动] 开始批量缩放图片（尺寸通道）")
+        print(f"模式: {mode}")
+        print(f"输入文件夹: {input_folder}")
+        print(f"输出文件夹: {output_folder}")
+        print(f"目标尺寸: {target_size}")
+        print(f"会话ID: {session_id}")
+        print(f"{'='*60}\n")
+
+        resize_status['is_processing'] = True
+        resize_status['mode'] = mode
+        resize_status['errors'] = []
+        resize_status['logs'] = []
+        resize_status['processed_files'] = 0
+        resize_status['current_file'] = ''
+        resize_status['session_id'] = session_id or ''
+        resize_status['input_folder'] = input_folder
+        resize_status['output_folder'] = output_folder
+        resize_status['target_size'] = list(target_size) if target_size else None
+        resize_status['sharpen'] = bool(sharpen)
+        try:
+            sharpen_strength = float(sharpen_strength)
+        except Exception:
+            sharpen_strength = 0.0
+        # 允许更强的锐化（0.0 ~ 1.5）
+        sharpen_strength = max(0.0, min(1.5, sharpen_strength))
+        resize_status['sharpen_strength'] = sharpen_strength
+        _append_resize_log(
+            f"任务开始：mode={mode} target={target_size[0]}x{target_size[1]} "
+            f"sharpen={'on' if sharpen else 'off'} strength={sharpen_strength:.2f}"
+        )
+
+        image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
+        input_path = Path(input_folder)
+        image_files = [
+            f for f in input_path.iterdir()
+            if f.suffix.lower() in image_extensions and f.is_file()
+        ]
+
+        if not image_files:
+            error_msg = f'在文件夹 {input_folder} 中未找到图片文件（支持格式: .jpg, .jpeg, .png, .bmp, .tiff, .webp）'
+            print(f"✗ 错误: {error_msg}")
+            resize_status['errors'].append(error_msg)
+            _append_resize_log(f"未找到图片：{error_msg}")
+            resize_status['total_files'] = 0
+            return
+
+        resize_status['total_files'] = len(image_files)
+
+        output_path = Path(output_folder)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        for idx, image_file in enumerate(image_files, 1):
+            try:
+                resize_status['current_file'] = image_file.name
+                resize_status['processed_files'] = idx - 1
+
+                # 统一输出 PNG（无损）
+                output_file = output_path / f"{image_file.stem}.png"
+
+                with Image.open(image_file) as im:
+                    # 处理 EXIF 方向，避免横竖颠倒
+                    try:
+                        im = ImageOps.exif_transpose(im)
+                    except Exception:
+                        pass
+
+                    # PNG 支持透明通道：尽量保留 alpha；P 模式转 RGBA 更稳
+                    if im.mode == 'P':
+                        im = im.convert('RGBA')
+
+                    # 计算缩放倍数（用于锐化强度调节）
+                    try:
+                        sx = target_size[0] / max(1, im.size[0])
+                        sy = target_size[1] / max(1, im.size[1])
+                        scale = (sx + sy) / 2.0
+                    except Exception:
+                        scale = 1.0
+
+                    # 渐进式缩放：大幅放大时分多步，更接近“智能对象”观感
+                    def progressive_resize(src_img: Image.Image, dst_size: tuple) -> Image.Image:
+                        tw, th = dst_size
+                        cw, ch = src_img.size
+                        # 仅在明显放大时启用（避免浪费时间）
+                        if cw <= 0 or ch <= 0:
+                            return resize_image_smart(src_img, dst_size, method='lanczos')
+                        if tw <= cw * 1.15 and th <= ch * 1.15:
+                            return resize_image_smart(src_img, dst_size, method='lanczos')
+
+                        cur = src_img
+                        # 每次放大 1.5x，直到接近目标
+                        while True:
+                            cw2, ch2 = cur.size
+                            nw = min(tw, int(cw2 * 1.5))
+                            nh = min(th, int(ch2 * 1.5))
+                            if nw == tw and nh == th:
+                                break
+                            cur = resize_image_smart(cur, (nw, nh), method='lanczos')
+                            if nw == tw and nh == th:
+                                break
+                        if cur.size != dst_size:
+                            cur = resize_image_smart(cur, dst_size, method='lanczos')
+                        return cur
+
+                    resized = progressive_resize(im, target_size)
+
+                    # 额外锐化（提高观感清晰度；不会“创造”细节）
+                    if sharpen and sharpen_strength > 0:
+                        base = 1.0 if scale <= 1.0 else 1.35  # 放大更积极
+                        # 双重锐化：微细节 + 轮廓（强度越大越明显）
+                        s = sharpen_strength
+                        s1 = min(s, 1.0)  # 用于 radius 的强度（避免半径过大）
+                        # 微细节（小半径高百分比）
+                        r_micro = 0.55 + 0.25 * s1 * base
+                        p_micro = int(160 + 320 * s * base)
+                        t_micro = 1
+                        # 轮廓（中半径中百分比）
+                        r_edge = 1.05 + 0.55 * s1 * base
+                        p_edge = int(80 + 220 * s * base)
+                        t_edge = 2
+
+                        if resized.mode in ('RGBA', 'LA'):
+                            alpha = resized.getchannel('A')
+                            rgb = resized.convert('RGB')
+                            rgb = rgb.filter(ImageFilter.UnsharpMask(radius=r_micro, percent=p_micro, threshold=t_micro))
+                            rgb = rgb.filter(ImageFilter.UnsharpMask(radius=r_edge, percent=p_edge, threshold=t_edge))
+                            resized = rgb.convert('RGBA')
+                            resized.putalpha(alpha)
+                        else:
+                            if resized.mode != 'RGB':
+                                resized = resized.convert('RGB')
+                            resized = resized.filter(ImageFilter.UnsharpMask(radius=r_micro, percent=p_micro, threshold=t_micro))
+                            resized = resized.filter(ImageFilter.UnsharpMask(radius=r_edge, percent=p_edge, threshold=t_edge))
+                    # PNG 保存（无损），适度压缩不影响清晰度
+                    resized.save(str(output_file), format='PNG', optimize=True, compress_level=6)
+
+                resize_status['processed_files'] = idx
+                _append_resize_log(f"✓ 完成：{image_file.name} -> {output_file.name}")
+                # 轻微延迟，给前端轮询更平滑
+                time.sleep(0.02)
+
+            except Exception as e:
+                err = f"{image_file.name}: {str(e)}"
+                print(f"✗ 缩放失败: {err}")
+                resize_status['errors'].append(err)
+                _append_resize_log(f"✗ 失败：{err}")
+                resize_status['processed_files'] = idx
+
+    except Exception as e:
+        import traceback
+        error_msg = f"批量缩放错误: {str(e)}"
+        print(f"严重错误: {error_msg}")
+        traceback.print_exc()
+        resize_status['errors'].append(error_msg)
+    finally:
+        resize_status['is_processing'] = False
+        resize_status['current_file'] = ''
+        _append_resize_log("任务结束")
+        if resize_status.get('total_files', 0) == 0 and resize_status.get('errors'):
+            resize_status['total_files'] = 1
+
+
+def process_images_batch(input_folder, output_folder, session_id=None, prompt: str = None):
     """批量处理图片"""
     global processing_status
     
@@ -46,6 +256,8 @@ def process_images_batch(input_folder, output_folder, session_id=None):
         print(f"输入文件夹: {input_folder}")
         print(f"输出文件夹: {output_folder}")
         print(f"会话ID: {session_id}")
+        if prompt:
+            print(f"提示词: {prompt}")
         print(f"{'='*60}\n")
         
         processing_status['is_processing'] = True
@@ -56,6 +268,7 @@ def process_images_batch(input_folder, output_folder, session_id=None):
             processing_status['session_id'] = session_id
             processing_status['input_folder'] = input_folder
             processing_status['temp_folder'] = output_folder
+            processing_status['prompt'] = prompt or ''
         
         # 支持的图片格式
         image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
@@ -119,7 +332,8 @@ def process_images_batch(input_folder, output_folder, session_id=None):
                 result = agent.process_image(
                     input_path=str(image_file),
                     output_path=str(output_file),
-                    target_size=(1024, 1536)
+                    target_size=(1024, 1536),
+                    prompt=prompt
                 )
                 
                 if result['success']:
@@ -169,7 +383,7 @@ def process_images_batch(input_folder, output_folder, session_id=None):
 @app.route('/')
 def index():
     """主页"""
-    return render_template('index.html')
+    return render_template('index.html', default_prompt=GPTHandler.FIXED_PROMPT)
 
 
 @app.route('/api/process', methods=['POST', 'OPTIONS'])
@@ -214,6 +428,14 @@ def api_process():
     
     input_folder = data.get('input_folder', '').strip()
     print(f"输入文件夹路径: {input_folder}")
+    prompt = data.get('prompt', None)
+    if isinstance(prompt, str):
+        prompt = prompt.strip()
+        if not prompt:
+            prompt = None
+    else:
+        prompt = None
+    print(f"提示词: {prompt or '(使用默认提示词)'}")
     
     if not input_folder:
         return jsonify({
@@ -243,6 +465,7 @@ def api_process():
     processing_status['session_id'] = session_id
     processing_status['input_folder'] = input_folder
     processing_status['temp_folder'] = temp_folder
+    processing_status['prompt'] = prompt or ''
     
     # 立即更新状态，让前端知道处理已开始
     processing_status['is_processing'] = True
@@ -262,7 +485,7 @@ def api_process():
     
     thread = threading.Thread(
         target=process_images_batch,
-        args=(input_folder, temp_folder, session_id),
+        args=(input_folder, temp_folder, session_id, prompt),
         name=f"ProcessThread-{session_id}"
     )
     thread.daemon = True
@@ -288,6 +511,142 @@ def api_process():
 def api_status():
     """获取处理状态"""
     return jsonify(processing_status)
+
+@app.route('/api/resize', methods=['POST'])
+def api_resize():
+    """尺寸通道：批量缩放图片"""
+    global processing_status, resize_status
+
+    # 如果 AI 修复或尺寸通道正在运行，拒绝并发
+    if processing_status.get('is_processing'):
+        return jsonify({'success': False, 'message': 'AI修复正在处理中，请等待完成后再进行尺寸通道处理'}), 400
+    if resize_status.get('is_processing'):
+        return jsonify({'success': False, 'message': '尺寸通道正在处理中，请等待完成'}), 400
+
+    data = request.json or {}
+    input_folder = (data.get('input_folder') or '').strip()
+    mode = (data.get('mode') or '').strip().lower()
+    sharpen = data.get('sharpen', True)
+    sharpen_strength = data.get('sharpen_strength', None)
+
+    if not input_folder:
+        return jsonify({'success': False, 'message': '请输入图片文件夹路径'}), 400
+    if not os.path.exists(input_folder):
+        return jsonify({'success': False, 'message': '文件夹路径不存在'}), 400
+    if not os.path.isdir(input_folder):
+        return jsonify({'success': False, 'message': '路径不是文件夹'}), 400
+
+    if mode not in {'compressed', 'original'}:
+        return jsonify({'success': False, 'message': 'mode 参数无效（compressed/original）'}), 400
+
+    # 目标尺寸
+    if mode == 'compressed':
+        target_size = (1026, 1539)
+        out_name = '压缩问题_1026x1539'
+        default_strength = 0.30
+    else:
+        target_size = (2160, 3240)
+        out_name = '原图问题_2160x3240'
+        default_strength = 0.75
+
+    # 解析锐化参数
+    if isinstance(sharpen, str):
+        sharpen = sharpen.strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
+    else:
+        sharpen = bool(sharpen)
+    if sharpen_strength is None or sharpen_strength == '':
+        sharpen_strength = default_strength
+    try:
+        sharpen_strength = float(sharpen_strength)
+    except Exception:
+        sharpen_strength = default_strength
+    sharpen_strength = max(0.0, min(1.5, sharpen_strength))
+
+    import uuid
+    session_id = str(uuid.uuid4())[:8]
+    output_folder = os.path.join(input_folder, out_name)
+    os.makedirs(output_folder, exist_ok=True)
+
+    # 立即更新状态（给前端）
+    resize_status.update({
+        'is_processing': True,
+        'mode': mode,
+        'current_file': '正在初始化...',
+        'total_files': 0,
+        'processed_files': 0,
+        'errors': [],
+        'logs': [],
+        'session_id': session_id,
+        'input_folder': input_folder,
+        'output_folder': output_folder,
+        'target_size': list(target_size),
+        'sharpen': sharpen,
+        'sharpen_strength': sharpen_strength
+    })
+
+    thread = threading.Thread(
+        target=process_resize_batch,
+        args=(input_folder, output_folder, target_size, mode, session_id, sharpen, sharpen_strength),
+        name=f"ResizeThread-{session_id}"
+    )
+    thread.daemon = True
+    thread.start()
+
+    return jsonify({
+        'success': True,
+        'message': '开始缩放',
+        'session_id': session_id,
+        'mode': mode,
+        'target_size': list(target_size),
+        'output_folder': output_folder
+    })
+
+
+@app.route('/api/resize_status', methods=['GET'])
+def api_resize_status():
+    """尺寸通道：获取缩放任务状态"""
+    return jsonify(resize_status)
+
+@app.route('/api/resize_images', methods=['GET'])
+def api_resize_images():
+    """尺寸通道：输出文件夹预览（列出输出图片 + 对应原图路径）"""
+    global resize_status
+
+    folder = request.args.get('folder', '').strip()
+    # 默认使用当前任务输出文件夹
+    if not folder:
+        folder = (resize_status.get('output_folder') or '').strip()
+    # 只允许预览当前 output_folder，避免任意目录浏览
+    if not folder or folder != (resize_status.get('output_folder') or ''):
+        return jsonify({'images': [], 'message': 'output_folder 无效或不匹配'}), 400
+
+    if not os.path.exists(folder) or not os.path.isdir(folder):
+        return jsonify({'images': [], 'message': '输出文件夹不存在'}), 404
+
+    output_path = Path(folder)
+    input_folder = (resize_status.get('input_folder') or '').strip()
+    image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
+
+    images = []
+    for file in output_path.iterdir():
+        if file.is_file() and file.suffix.lower() in image_extensions:
+            original_path = None
+            if input_folder:
+                stem = file.stem
+                for ext in image_extensions:
+                    test_path = Path(input_folder) / f"{stem}{ext}"
+                    if test_path.exists():
+                        original_path = test_path
+                        break
+            images.append({
+                'original': str(original_path) if original_path and original_path.exists() else None,
+                'resized': str(file),
+                'name': file.name,
+            })
+
+    # 排序：按文件名
+    images.sort(key=lambda x: x.get('name', ''))
+    return jsonify({'images': images, 'count': len(images)})
 
 
 @app.route('/api/task_report', methods=['GET'])

@@ -81,6 +81,23 @@
             border-color: #7EBEFB;
         }
 
+        .form-group textarea {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 1em;
+            transition: border-color 0.3s;
+            resize: vertical;
+            min-height: 80px;
+            font-family: inherit;
+        }
+
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #7EBEFB;
+        }
+
         .btn {
             background: linear-gradient(135deg, #7EBEFB 0%, #5A9FD8 100%);
             color: white;
@@ -101,6 +118,62 @@
         .btn:disabled {
             opacity: 0.6;
             cursor: not-allowed;
+        }
+
+        /* 顶部分页（Tab） */
+        .tab-nav {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin: 15px 0 25px;
+            flex-wrap: wrap;
+        }
+
+        .tab-btn {
+            background: white;
+            border: 2px solid #7EBEFB;
+            color: #5A9FD8;
+            padding: 10px 18px;
+            border-radius: 999px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.2s;
+        }
+
+        .tab-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 18px rgba(126, 190, 251, 0.25);
+        }
+
+        .tab-btn.active {
+            background: linear-gradient(135deg, #7EBEFB 0%, #5A9FD8 100%);
+            color: white;
+            border-color: transparent;
+        }
+
+        .channel-card {
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            margin-bottom: 18px;
+        }
+
+        .channel-title {
+            font-size: 1.05em;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 12px;
+        }
+
+        .hint-box {
+            margin-top: 10px;
+            padding: 12px 14px;
+            background: #E6F4FD;
+            border-left: 4px solid #7EBEFB;
+            border-radius: 10px;
+            color: #245b86;
+            line-height: 1.6;
         }
 
         .status-section {
@@ -293,6 +366,10 @@
             object-fit: contain;
         }
 
+        .preview-image-wrapper img.zoomable-fixed {
+            cursor: zoom-in;
+        }
+
         .preview-label {
             text-align: center;
             margin-top: 10px;
@@ -415,6 +492,101 @@
             margin-bottom: 20px;
             opacity: 0.5;
         }
+
+        /* 图片放大预览（双击 + 滚轮缩放） */
+        .zoom-modal {
+            display: none;
+            position: fixed;
+            z-index: 2000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.75);
+        }
+
+        .zoom-modal-content {
+            position: relative;
+            width: 92%;
+            height: 92%;
+            margin: 2% auto;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 14px;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.35);
+            overflow: hidden;
+        }
+
+        .zoom-close {
+            position: absolute;
+            right: 14px;
+            top: 10px;
+            color: rgba(255,255,255,0.9);
+            font-size: 32px;
+            font-weight: bold;
+            cursor: pointer;
+            user-select: none;
+            z-index: 2002;
+        }
+
+        .zoom-hint {
+            position: absolute;
+            left: 14px;
+            top: 14px;
+            color: rgba(255,255,255,0.92);
+            font-size: 13px;
+            padding: 8px 10px;
+            background: rgba(0,0,0,0.35);
+            border-radius: 10px;
+            z-index: 2002;
+            user-select: none;
+        }
+
+        .zoom-canvas {
+            position: absolute;
+            left: 0;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            overflow: hidden;
+            cursor: grab;
+        }
+
+        .zoom-canvas.dragging {
+            cursor: grabbing;
+        }
+
+        /* 放大预览层
+           外层负责 translate（屏幕坐标），内层负责 scale（图像坐标） */
+        #zoomLayerOuter {
+            position: absolute;
+            left: 0;
+            top: 0;
+            transform: translate(0px, 0px);
+            transform-origin: 0 0;
+        }
+
+        #zoomLayerInner {
+            position: absolute;
+            left: 0;
+            top: 0;
+            transform-origin: 0 0;
+            user-select: none;
+            -webkit-user-drag: none;
+        }
+
+        #zoomImage {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            max-width: none;
+            max-height: none;
+            user-select: none;
+            -webkit-user-drag: none;
+            pointer-events: none; /* 让拖拽/滚轮事件落在画布上 */
+        }
     </style>
 </head>
 <body>
@@ -424,11 +596,23 @@
             <p>使用AI自动修复图片背景，输出1024×1536清晰图片</p>
         </div>
 
-        <div class="content">
+        <div class="tab-nav">
+            <button class="tab-btn active" id="tabAiBtn" onclick="switchMainTab('ai')">AI修复</button>
+            <button class="tab-btn" id="tabResizeBtn" onclick="switchMainTab('resize')">尺寸通道</button>
+        </div>
+
+        <div class="content" id="aiPage">
             <div class="input-section">
                 <div class="form-group">
                     <label for="inputFolder">📁 图片文件夹路径：</label>
                     <input type="text" id="inputFolder" placeholder="例如: D:\Photos\input_images" />
+                </div>
+                <div class="form-group">
+                    <label for="promptInput">📝 提示词（可修改）：</label>
+                    <textarea id="promptInput" placeholder="请输入提示词（不填则使用默认提示词）">{{ default_prompt|e }}</textarea>
+                    <small style="display:block; margin-top: 6px; color:#666; line-height: 1.4;">
+                        不填会使用默认提示词；修改后会按你填写的提示词生成。
+                    </small>
                 </div>
                 <button class="btn" id="processBtn" onclick="startProcessing()">
                     🚀 开始处理
@@ -528,11 +712,128 @@
                 </div>
             </div>
         </div>
+
+        <!-- 尺寸通道页：压缩问题 / 原图问题 -->
+        <div class="content" id="resizePage" style="display: none;">
+            <div class="input-section">
+                <h2 style="margin-top:0; margin-bottom: 10px;">📐 尺寸通道（不改变清晰程度的高质量缩放）</h2>
+                <div class="hint-box">
+                    - **压缩问题**：输出尺寸固定为 <strong>1026×1539</strong>（缩小）<br>
+                    - **原图问题**：输出尺寸固定为 <strong>2160×3240</strong>（放大）<br>
+                    输出会分别保存到你输入文件夹下的子文件夹：<code>压缩问题_1026x1539</code> / <code>原图问题_2160x3240</code>。
+                </div>
+
+                <div class="channel-card" style="margin-top: 16px;">
+                    <div class="channel-title">🔧 清晰度增强（可选）</div>
+                    <div style="display:flex; align-items:center; gap: 12px; flex-wrap: wrap;">
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                            <input type="checkbox" id="resizeSharpenEnabled" checked>
+                            <span><strong>增强锐度</strong>（放大更明显，可能会有轻微边缘强化）</span>
+                        </label>
+                        <div style="display:flex; align-items:center; gap:10px; flex: 1; min-width: 260px;">
+                            <span style="white-space:nowrap; color:#666;">强度</span>
+                            <input type="range" id="resizeSharpenStrength" min="0" max="150" value="15" style="flex: 1;">
+                            <span id="resizeSharpenStrengthValue" style="min-width: 48px; text-align:right; color:#333; font-weight:bold;">15%</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="channel-card">
+                <div class="channel-title">通道 A：压缩问题（缩小到 1026×1539）</div>
+                <div class="form-group">
+                    <label for="compressedFolder">📁 图片文件夹路径：</label>
+                    <input type="text" id="compressedFolder" placeholder="例如: D:\Photos\compressed_issue" />
+                </div>
+                <button class="btn" id="startCompressedBtn" onclick="startResize('compressed')" style="padding: 12px 28px;">
+                    ▶ 开始缩放（压缩问题）
+                </button>
+            </div>
+
+            <div class="channel-card">
+                <div class="channel-title">通道 B：原图问题（放大到 2160×3240）</div>
+                <div class="form-group">
+                    <label for="originalIssueFolder">📁 图片文件夹路径：</label>
+                    <input type="text" id="originalIssueFolder" placeholder="例如: D:\Photos\original_issue" />
+                </div>
+                <button class="btn" id="startOriginalBtn" onclick="startResize('original')" style="padding: 12px 28px;">
+                    ▶ 开始缩放（原图问题）
+                </button>
+            </div>
+
+            <div class="status-section" id="resizeStatusSection" style="display: none;">
+                <div style="display:flex; justify-content: space-between; align-items:center; margin-bottom: 10px; gap: 10px; flex-wrap: wrap;">
+                    <h2 style="margin: 0;">尺寸通道状态</h2>
+                    <div style="color:#666;">
+                        <strong>输出文件夹：</strong><span id="resizeOutputFolder">-</span>
+                    </div>
+                </div>
+                <div class="status-item">
+                    <strong>模式：</strong> <span id="resizeMode">-</span>
+                </div>
+                <div class="status-item">
+                    <strong>当前文件：</strong> <span id="resizeCurrentFile">-</span>
+                </div>
+                <div class="status-item">
+                    <strong>进度：</strong> <span id="resizeProgress">0 / 0</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="resizeProgressFill" style="width: 0%">0%</div>
+                </div>
+                <div id="resizeStatusMessage"></div>
+
+                <div style="margin-top: 16px;">
+                    <div style="display:flex; justify-content: space-between; align-items:center; gap: 10px; flex-wrap: wrap;">
+                        <h3 style="margin: 0; color:#333;">📋 任务日志</h3>
+                        <button class="btn" onclick="clearResizeLogUI()" style="padding: 8px 16px; font-size: 0.9em; background: white; color:#5A9FD8; border: 2px solid #7EBEFB;">
+                            清空日志显示
+                        </button>
+                    </div>
+                    <div id="resizeLogList" style="margin-top: 10px; background:#0b1220; color:#d6e2ff; border-radius: 12px; padding: 12px; max-height: 220px; overflow:auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 12px; line-height: 1.6;">
+                        <div style="opacity:0.8;">暂无日志</div>
+                    </div>
+                </div>
+
+                <div style="margin-top: 16px;">
+                    <div style="display:flex; justify-content: space-between; align-items:center; gap: 10px; flex-wrap: wrap;">
+                        <h3 style="margin: 0; color:#333;">🖼️ 输出文件夹预览</h3>
+                        <button class="btn" onclick="loadResizePreview(true)" style="padding: 8px 16px; font-size: 0.9em;">
+                            刷新预览
+                        </button>
+                    </div>
+                    <div id="resizePreviewMeta" style="margin-top: 8px; color:#666;">-</div>
+                    <div id="resizePreviewGrid" style="margin-top: 10px; display:grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px;">
+                        <div class="empty-state" style="padding: 24px 10px;">
+                            <p style="margin:0;">暂无预览</p>
+                        </div>
+                    </div>
+                    <div style="margin-top: 10px; color:#666; font-size: 0.9em;">
+                        提示：点击缩略图可预览（滚轮缩放）。
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 放大预览模态框 -->
+    <div id="imageZoomModal" class="zoom-modal" aria-hidden="true">
+        <div class="zoom-modal-content">
+            <div class="zoom-hint">点击预览 · 滚轮缩放 · 拖拽移动 · ESC 关闭</div>
+            <div id="zoomClose" class="zoom-close">&times;</div>
+            <div id="zoomCanvas" class="zoom-canvas">
+                <div id="zoomLayerOuter">
+                    <div id="zoomLayerInner">
+                        <img id="zoomImage" alt="预览图片" />
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
         let statusCheckInterval = null;
         let imagesCheckInterval = null;
+        let resizeCheckInterval = null;
         let currentSessionId = '';
         let currentOutputFolder = '';
         let selectedImages = new Set();
@@ -549,6 +850,8 @@
                 }
                 
                 const folderPath = inputFolder.value.trim();
+                const promptEl = document.getElementById('promptInput');
+                const promptText = promptEl ? (promptEl.value || '').trim() : '';
                 
                 if (!folderPath) {
                     alert('请输入图片文件夹路径');
@@ -624,6 +927,7 @@
             // 发送处理请求
             console.log('=== 开始发送处理请求 ===');
             console.log('输入文件夹:', folderPath);
+            console.log('提示词:', promptText);
             
             // 显示状态消息
             const statusMessage = document.getElementById('statusMessage');
@@ -637,7 +941,8 @@
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    input_folder: folderPath
+                    input_folder: folderPath,
+                    prompt: promptText
                 })
             })
             .then(response => {
@@ -694,6 +999,310 @@
                     btn.textContent = '🚀 开始处理';
                 }
             }
+        }
+
+        function switchMainTab(tab) {
+            const aiPage = document.getElementById('aiPage');
+            const resizePage = document.getElementById('resizePage');
+            const tabAiBtn = document.getElementById('tabAiBtn');
+            const tabResizeBtn = document.getElementById('tabResizeBtn');
+
+            if (!aiPage || !resizePage || !tabAiBtn || !tabResizeBtn) return;
+
+            if (tab === 'resize') {
+                aiPage.style.display = 'none';
+                resizePage.style.display = 'block';
+                tabAiBtn.classList.remove('active');
+                tabResizeBtn.classList.add('active');
+            } else {
+                resizePage.style.display = 'none';
+                aiPage.style.display = 'block';
+                tabResizeBtn.classList.remove('active');
+                tabAiBtn.classList.add('active');
+            }
+
+            try {
+                localStorage.setItem('mainTab', tab);
+            } catch (e) {}
+        }
+
+        function startResize(mode) {
+            const isCompressed = mode === 'compressed';
+            const inputEl = document.getElementById(isCompressed ? 'compressedFolder' : 'originalIssueFolder');
+            const btnEl = document.getElementById(isCompressed ? 'startCompressedBtn' : 'startOriginalBtn');
+            const otherBtn = document.getElementById(isCompressed ? 'startOriginalBtn' : 'startCompressedBtn');
+            const statusSection = document.getElementById('resizeStatusSection');
+            const msgEl = document.getElementById('resizeStatusMessage');
+            const outEl = document.getElementById('resizeOutputFolder');
+            const modeEl = document.getElementById('resizeMode');
+            const sharpenEnabledEl = document.getElementById('resizeSharpenEnabled');
+            const sharpenStrengthEl = document.getElementById('resizeSharpenStrength');
+
+            if (!inputEl) {
+                alert('错误: 找不到输入框元素');
+                return;
+            }
+            const folderPath = (inputEl.value || '').trim();
+            if (!folderPath) {
+                alert('请输入图片文件夹路径');
+                return;
+            }
+
+            const sharpen = sharpenEnabledEl ? !!sharpenEnabledEl.checked : true;
+            const strengthPct = sharpenStrengthEl ? parseFloat(sharpenStrengthEl.value) : 15;
+            // 允许到 150% -> 1.5
+            const sharpenStrength = Number.isFinite(strengthPct) ? Math.max(0, Math.min(150, strengthPct)) / 100 : 0.15;
+
+            if (btnEl) {
+                btnEl.disabled = true;
+                btnEl.textContent = '⏳ 处理中...';
+            }
+            if (otherBtn) otherBtn.disabled = true;
+
+            if (statusSection) statusSection.style.display = 'block';
+            if (msgEl) msgEl.innerHTML = '<div style="color:#5A9FD8; padding:10px; background:#e3f2fd; border-radius:8px; margin-top:10px;">正在发送缩放请求...</div>';
+            if (modeEl) modeEl.textContent = isCompressed ? '压缩问题（1026×1539）' : '原图问题（2160×3240）';
+            if (outEl) outEl.textContent = '-';
+
+            fetch('/api/resize', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    input_folder: folderPath,
+                    mode: mode,
+                    sharpen: sharpen,
+                    sharpen_strength: sharpenStrength
+                })
+            })
+            .then(r => {
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                return r.json();
+            })
+            .then(data => {
+                if (!data || !data.success) {
+                    throw new Error((data && data.message) ? data.message : '启动失败');
+                }
+                if (outEl) outEl.textContent = data.output_folder || '-';
+                if (msgEl) msgEl.innerHTML = '<div style="color:#4caf50; padding:10px; background:#e8f5e9; border-radius:8px; margin-top:10px;">✓ 已开始处理，正在缩放...</div>';
+                startResizeStatusCheck();
+            })
+            .catch(err => {
+                console.error('startResize error:', err);
+                if (msgEl) msgEl.innerHTML = `<div style="color:#f44336; padding:10px; background:#ffebee; border-radius:8px; margin-top:10px;">✗ 启动失败: ${err.message}</div>`;
+                if (btnEl) {
+                    btnEl.disabled = false;
+                    btnEl.textContent = isCompressed ? '▶ 开始缩放（压缩问题）' : '▶ 开始缩放（原图问题）';
+                }
+                if (otherBtn) otherBtn.disabled = false;
+            });
+        }
+
+        function startResizeStatusCheck() {
+            if (resizeCheckInterval) {
+                clearInterval(resizeCheckInterval);
+            }
+
+            let isChecking = false;
+            const doCheck = () => {
+                if (isChecking) return;
+                isChecking = true;
+
+                fetch('/api/resize_status', {
+                    method: 'GET',
+                    cache: 'no-cache',
+                    headers: { 'Cache-Control': 'no-cache' },
+                    signal: AbortSignal.timeout(5000)
+                })
+                .then(r => {
+                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                    return r.json();
+                })
+                .then(st => {
+                    const statusSection = document.getElementById('resizeStatusSection');
+                    const currentFile = document.getElementById('resizeCurrentFile');
+                    const progress = document.getElementById('resizeProgress');
+                    const fill = document.getElementById('resizeProgressFill');
+                    const msgEl = document.getElementById('resizeStatusMessage');
+                    const outEl = document.getElementById('resizeOutputFolder');
+                    const modeEl = document.getElementById('resizeMode');
+
+                    if (statusSection) statusSection.style.display = 'block';
+                    if (outEl) outEl.textContent = st.output_folder || '-';
+                    if (modeEl) {
+                        if (st.mode === 'compressed') modeEl.textContent = '压缩问题（1026×1539）';
+                        else if (st.mode === 'original') modeEl.textContent = '原图问题（2160×3240）';
+                        else modeEl.textContent = '-';
+                    }
+
+                    if (currentFile) currentFile.textContent = st.current_file || '-';
+                    if (progress) progress.textContent = `${st.processed_files || 0} / ${st.total_files || 0}`;
+                    const pct = (st.total_files && st.total_files > 0)
+                        ? Math.round((st.processed_files / st.total_files) * 100)
+                        : 0;
+                    if (fill) {
+                        fill.style.width = `${pct}%`;
+                        fill.textContent = `${pct}%`;
+                    }
+
+                    if (msgEl) {
+                        if (st.is_processing) {
+                            msgEl.innerHTML = '<div style="color:#5A9FD8; padding:10px; background:#e3f2fd; border-radius:8px; margin-top:10px;">正在缩放处理中，请稍候...</div>';
+                        } else {
+                            const errCount = (st.errors && st.errors.length) ? st.errors.length : 0;
+                            if (errCount > 0) {
+                                msgEl.innerHTML = `<div style="color:#f57c00; padding:10px; background:#fff3e0; border-radius:8px; margin-top:10px;">完成，但有 ${errCount} 个错误（可在控制台查看）。</div>`;
+                            } else if ((st.processed_files || 0) > 0) {
+                                msgEl.innerHTML = '<div style="color:#2e7d32; padding:10px; background:#e8f5e9; border-radius:8px; margin-top:10px;">✓ 全部完成！</div>';
+                            } else {
+                                msgEl.innerHTML = '<div style="color:#666; padding:10px; background:#f5f5f5; border-radius:8px; margin-top:10px;">等待开始处理</div>';
+                            }
+                        }
+                    }
+
+                    // 渲染任务日志
+                    renderResizeLogs(st);
+
+                    // 预览：有 output_folder 时尝试刷新（避免频繁刷新：仅在进度变化或首次）
+                    maybeAutoLoadResizePreview(st);
+
+                    // 结束时恢复按钮
+                    if (!st.is_processing) {
+                        clearInterval(resizeCheckInterval);
+                        resizeCheckInterval = null;
+                        const startCompressedBtn = document.getElementById('startCompressedBtn');
+                        const startOriginalBtn = document.getElementById('startOriginalBtn');
+                        if (startCompressedBtn) {
+                            startCompressedBtn.disabled = false;
+                            startCompressedBtn.textContent = '▶ 开始缩放（压缩问题）';
+                        }
+                        if (startOriginalBtn) {
+                            startOriginalBtn.disabled = false;
+                            startOriginalBtn.textContent = '▶ 开始缩放（原图问题）';
+                        }
+                    }
+                })
+                .catch(err => {
+                    console.error('resize status error:', err);
+                })
+                .finally(() => {
+                    isChecking = false;
+                });
+            };
+
+            doCheck();
+            resizeCheckInterval = setInterval(doCheck, 2000);
+        }
+
+        let _lastResizeProcessed = -1;
+        let _lastResizePreviewFolder = '';
+        let _uiResizeLogCleared = false;
+
+        function clearResizeLogUI() {
+            _uiResizeLogCleared = true;
+            const logEl = document.getElementById('resizeLogList');
+            if (logEl) {
+                logEl.innerHTML = '<div style="opacity:0.8;">（已清空显示）</div>';
+                logEl.scrollTop = logEl.scrollHeight;
+            }
+        }
+
+        function renderResizeLogs(st) {
+            if (_uiResizeLogCleared) return;
+            const logEl = document.getElementById('resizeLogList');
+            if (!logEl) return;
+
+            const logs = (st && Array.isArray(st.logs)) ? st.logs : [];
+            const errors = (st && Array.isArray(st.errors)) ? st.errors : [];
+
+            const lines = [];
+            logs.forEach(l => lines.push(String(l)));
+            // 补充错误（若后端未写入 logs，也能看到）
+            if (errors.length > 0) {
+                lines.push('--- Errors ---');
+                errors.slice(-50).forEach(e => lines.push(String(e)));
+            }
+
+            if (lines.length === 0) {
+                logEl.innerHTML = '<div style="opacity:0.8;">暂无日志</div>';
+                return;
+            }
+
+            // 简单转义
+            const esc = (s) => String(s)
+                .replaceAll('&', '&amp;')
+                .replaceAll('<', '&lt;')
+                .replaceAll('>', '&gt;');
+
+            logEl.innerHTML = lines.slice(-300).map(l => `<div>${esc(l)}</div>`).join('');
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        function maybeAutoLoadResizePreview(st) {
+            const folder = (st && st.output_folder) ? st.output_folder : '';
+            const processed = (st && typeof st.processed_files === 'number') ? st.processed_files : 0;
+            if (!folder) return;
+
+            const shouldReload = (folder !== _lastResizePreviewFolder) || (processed !== _lastResizeProcessed);
+            if (!shouldReload) return;
+
+            _lastResizePreviewFolder = folder;
+            _lastResizeProcessed = processed;
+            // 防抖一点点，避免每次轮询都抖动
+            setTimeout(() => loadResizePreview(false), 200);
+        }
+
+        function loadResizePreview(force) {
+            const outEl = document.getElementById('resizeOutputFolder');
+            const metaEl = document.getElementById('resizePreviewMeta');
+            const gridEl = document.getElementById('resizePreviewGrid');
+            const folder = outEl ? (outEl.textContent || '').trim() : '';
+            if (!gridEl) return;
+
+            if (!folder || folder === '-') {
+                if (metaEl) metaEl.textContent = '输出文件夹未就绪';
+                gridEl.innerHTML = '<div class="empty-state" style="padding: 24px 10px;"><p style="margin:0;">暂无预览</p></div>';
+                return;
+            }
+
+            if (metaEl) metaEl.textContent = '正在加载预览...';
+
+            fetch(`/api/resize_images?folder=${encodeURIComponent(folder)}`, { cache: 'no-cache' })
+                .then(r => r.json().then(j => ({ ok: r.ok, status: r.status, body: j })))
+                .then(({ ok, status, body }) => {
+                    if (!ok) {
+                        throw new Error((body && body.message) ? body.message : `HTTP ${status}`);
+                    }
+                    const images = body.images || [];
+                    if (metaEl) metaEl.textContent = `共 ${body.count || images.length} 张（点击缩略图可放大对比）`;
+                    if (!images.length) {
+                        gridEl.innerHTML = '<div class="empty-state" style="padding: 24px 10px;"><p style="margin:0;">暂无预览</p></div>';
+                        return;
+                    }
+
+                    gridEl.innerHTML = images.map((img) => {
+                        const resizedUrl = `/api/image?path=${encodeURIComponent(img.resized)}`;
+                        const originalUrl = img.original ? `/api/image?path=${encodeURIComponent(img.original)}` : '';
+                        const name = img.name || '';
+                        const nameEsc = name.replaceAll('"', '&quot;');
+                        // 用 data-xx 传给现有 zoom modal（原图 vs 缩放后）
+                        return `
+                            <div style="background:white; border-radius: 12px; padding: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
+                                <img src="${resizedUrl}" alt="${nameEsc}" style="width:100%; height: 180px; object-fit: contain; border-radius: 10px; cursor: zoom-in; background:#f6f7fb;"
+                                     data-original-src="${originalUrl}"
+                                     data-fixed-src="${resizedUrl}"
+                                     onclick="openImageZoom(this.getAttribute('data-fixed-src'))"
+                                     onerror="this.style.opacity=0.3;">
+                                <div style="margin-top: 8px; font-size: 12px; color:#555; white-space: nowrap; overflow:hidden; text-overflow: ellipsis;" title="${nameEsc}">
+                                    ${nameEsc}
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                })
+                .catch(err => {
+                    console.error('loadResizePreview error:', err);
+                    if (metaEl) metaEl.textContent = `预览加载失败：${err.message}`;
+                });
         }
 
         function startStatusCheck() {
@@ -1006,7 +1615,11 @@
                     </div>
                     <div class="preview-image-wrapper">
                         <div class="preview-label" style="margin-bottom: 10px;">处理后（修复后）</div>
-                        <img src="${fixedUrl}" alt="修复后" onerror="this.parentElement.innerHTML='<div style=\\'padding:40px;text-align:center;color:#999\\'>图片加载失败</div>'">
+                        <img src="${fixedUrl}" alt="修复后" class="zoomable-fixed"
+                             title="双击放大预览（滚轮缩放）"
+                             data-original-src="${originalUrl || ''}"
+                             data-fixed-src="${fixedUrl}"
+                             onerror="this.parentElement.innerHTML='<div style=\\'padding:40px;text-align:center;color:#999\\'>图片加载失败</div>'">
                     </div>
                 </div>
                 <div style="margin-top: 15px; text-align: center; color: #666;">
@@ -1263,16 +1876,202 @@
                 });
         }
 
-        // 点击模态框外部关闭
-        window.onclick = function(event) {
-            const modal = document.getElementById('reportModal');
-            if (event.target == modal) {
-                modal.style.display = 'none';
+        // 点击模态框外部关闭（任务报告 + 放大预览）
+        window.addEventListener('click', function(event) {
+            const reportModal = document.getElementById('reportModal');
+            if (reportModal && event.target === reportModal) {
+                reportModal.style.display = 'none';
             }
+            
+            const zoomModal = document.getElementById('imageZoomModal');
+            if (zoomModal && event.target === zoomModal) {
+                closeImageZoom();
+            }
+        });
+
+        // 放大预览：点击图片打开，滚轮缩放，拖拽移动
+        let _zoomScale = 1;
+        let _zoomTx = 0;
+        let _zoomTy = 0;
+        let _zoomDragging = false;
+        let _dragStartX = 0;
+        let _dragStartY = 0;
+        let _dragStartTx = 0;
+        let _dragStartTy = 0;
+        let _zoomImgW = 0;
+        let _zoomImgH = 0;
+
+        function applyZoomTransform() {
+            const outer = document.getElementById('zoomLayerOuter');
+            const inner = document.getElementById('zoomLayerInner');
+            if (!outer || !inner) return;
+            // 映射关系：screen = img * scale + translate
+            outer.style.transform = `translate(${_zoomTx}px, ${_zoomTy}px)`;
+            inner.style.transform = `scale(${_zoomScale})`;
         }
+
+        function openImageZoom(src) {
+            const zoomModal = document.getElementById('imageZoomModal');
+            const zoomCanvas = document.getElementById('zoomCanvas');
+            const zoomImg = document.getElementById('zoomImage');
+            const outer = document.getElementById('zoomLayerOuter');
+            const inner = document.getElementById('zoomLayerInner');
+            if (!zoomModal || !zoomCanvas || !zoomImg || !outer || !inner) return;
+
+            zoomImg.src = src || '';
+
+            zoomModal.style.display = 'block';
+            zoomModal.setAttribute('aria-hidden', 'false');
+
+            _zoomScale = 1;
+            _zoomTx = 0;
+            _zoomTy = 0;
+            _zoomDragging = false;
+            zoomCanvas.classList.remove('dragging');
+
+            // 等图片加载后居中
+            zoomImg.onload = () => {
+                const rect = zoomCanvas.getBoundingClientRect();
+                const iw = zoomImg.naturalWidth || rect.width;
+                const ih = zoomImg.naturalHeight || rect.height;
+                _zoomImgW = iw;
+                _zoomImgH = ih;
+
+                // 设置 outer/inner 的实际尺寸
+                outer.style.width = `${iw}px`;
+                outer.style.height = `${ih}px`;
+                inner.style.width = `${iw}px`;
+                inner.style.height = `${ih}px`;
+
+                // 让图片默认尽量适配画布（不放大超过1）
+                const s = Math.min(rect.width / iw, rect.height / ih, 1);
+                _zoomScale = s;
+                _zoomTx = (rect.width - iw * _zoomScale) / 2;
+                _zoomTy = (rect.height - ih * _zoomScale) / 2;
+                applyZoomTransform();
+            };
+
+            applyZoomTransform();
+        }
+
+        function closeImageZoom() {
+            const zoomModal = document.getElementById('imageZoomModal');
+            const zoomCanvas = document.getElementById('zoomCanvas');
+            const zoomImg = document.getElementById('zoomImage');
+            if (zoomModal) {
+                zoomModal.style.display = 'none';
+                zoomModal.setAttribute('aria-hidden', 'true');
+            }
+            if (zoomImg) zoomImg.src = '';
+            if (zoomCanvas) {
+                zoomCanvas.classList.remove('dragging');
+            }
+            _zoomDragging = false;
+        }
+
+        // 事件委托：点击图片打开预览
+        document.addEventListener('click', function(e) {
+            const t = e.target;
+            if (t && t.tagName === 'IMG' && t.classList.contains('zoomable-fixed')) {
+                const fixedSrc = t.getAttribute('data-fixed-src') || t.src || '';
+                openImageZoom(fixedSrc);
+            }
+        });
+
+        // 关闭按钮
+        document.addEventListener('click', function(e) {
+            const t = e.target;
+            if (t && t.id === 'zoomClose') {
+                closeImageZoom();
+            }
+        });
+
+        // ESC 关闭
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                const zoomModal = document.getElementById('imageZoomModal');
+                if (zoomModal && zoomModal.style.display === 'block') {
+                    closeImageZoom();
+                }
+            }
+        });
+
+        // 滚轮缩放（以鼠标位置为缩放中心）
+        const _zoomWheelHandler = function(e) {
+            const zoomModal = document.getElementById('imageZoomModal');
+            if (!zoomModal || zoomModal.style.display !== 'block') return;
+
+            const zoomCanvas = document.getElementById('zoomCanvas');
+            if (!zoomCanvas) return;
+            // 只在画布区域内滚轮才触发缩放（避免影响拉杆区域）
+            if (!zoomCanvas.contains(e.target)) return;
+
+            e.preventDefault();
+
+            const rect = zoomCanvas.getBoundingClientRect();
+            const cx = e.clientX - rect.left;
+            const cy = e.clientY - rect.top;
+
+            const prevScale = _zoomScale;
+            const direction = e.deltaY > 0 ? -1 : 1; // deltaY>0 向下滚 => 缩小
+            const factor = 1.12;
+            let nextScale = direction > 0 ? prevScale * factor : prevScale / factor;
+            nextScale = Math.max(0.1, Math.min(10, nextScale));
+
+            // 将鼠标点固定在同一“图像坐标”
+            const wx = (cx - _zoomTx) / prevScale;
+            const wy = (cy - _zoomTy) / prevScale;
+            _zoomScale = nextScale;
+            _zoomTx = cx - wx * _zoomScale;
+            _zoomTy = cy - wy * _zoomScale;
+
+            applyZoomTransform();
+        };
+        document.addEventListener('wheel', _zoomWheelHandler, { passive: false });
+
+        // 拖拽平移
+        document.addEventListener('mousedown', function(e) {
+            const zoomModal = document.getElementById('imageZoomModal');
+            if (!zoomModal || zoomModal.style.display !== 'block') return;
+
+            const zoomCanvas = document.getElementById('zoomCanvas');
+            if (!zoomCanvas) return;
+
+            // 只允许在画布区域按下开始拖拽（避免点到关闭按钮/提示条也触发）
+            if (!zoomCanvas.contains(e.target)) return;
+
+            _zoomDragging = true;
+            _dragStartX = e.clientX;
+            _dragStartY = e.clientY;
+            _dragStartTx = _zoomTx;
+            _dragStartTy = _zoomTy;
+            zoomCanvas.classList.add('dragging');
+        });
+
+        document.addEventListener('mousemove', function(e) {
+            if (!_zoomDragging) return;
+            const dx = e.clientX - _dragStartX;
+            const dy = e.clientY - _dragStartY;
+            _zoomTx = _dragStartTx + dx;
+            _zoomTy = _dragStartTy + dy;
+            applyZoomTransform();
+        });
+
+        document.addEventListener('mouseup', function() {
+            if (!_zoomDragging) return;
+            _zoomDragging = false;
+            const zoomCanvas = document.getElementById('zoomCanvas');
+            if (zoomCanvas) zoomCanvas.classList.remove('dragging');
+        });
 
         // 页面加载时检查是否有正在进行的任务
         window.onload = function() {
+            // 恢复上次Tab
+            try {
+                const lastTab = localStorage.getItem('mainTab') || 'ai';
+                switchMainTab(lastTab);
+            } catch (e) {}
+
             fetch('/api/status')
                 .then(response => response.json())
                 .then(status => {
@@ -1289,7 +2088,35 @@
                         startStatusCheck();
                     }
                 });
+
+            // 如果尺寸通道正在进行，也恢复状态轮询
+            fetch('/api/resize_status')
+                .then(r => r.json())
+                .then(st => {
+                    if (st && st.is_processing) {
+                        const statusSection = document.getElementById('resizeStatusSection');
+                        if (statusSection) statusSection.style.display = 'block';
+                        startResizeStatusCheck();
+                    } else if (st && st.output_folder) {
+                        // 不在处理中也尝试加载一次预览/日志
+                        renderResizeLogs(st);
+                        setTimeout(() => loadResizePreview(false), 200);
+                    }
+                })
+                .catch(() => {});
         };
+
+        // 尺寸通道：锐化强度显示
+        (function initResizeSharpenUI() {
+            const el = document.getElementById('resizeSharpenStrength');
+            const valEl = document.getElementById('resizeSharpenStrengthValue');
+            if (!el || !valEl) return;
+            const update = () => {
+                valEl.textContent = `${el.value}%`;
+            };
+            el.addEventListener('input', update);
+            update();
+        })();
     </script>
 </body>
 </html>

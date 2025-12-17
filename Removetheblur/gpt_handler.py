@@ -70,7 +70,12 @@ class GPTHandler:
         
         return image_bytes
     
-    def edit_image(self, image: Image.Image, target_size: Tuple[int, int] = (1024, 1024)) -> Optional[Image.Image]:
+    def edit_image(
+        self,
+        image: Image.Image,
+        target_size: Tuple[int, int] = (1024, 1024),
+        prompt: Optional[str] = None
+    ) -> Optional[Image.Image]:
         """
         使用API编辑图片，使其变清晰
         使用 New API OpenAI 格式接口
@@ -79,6 +84,7 @@ class GPTHandler:
         Args:
             image: 原始图片
             target_size: 目标尺寸 (width, height)，例如 (1024, 1536)
+            prompt: 提示词（可选），为空则使用默认提示词
         
         Returns:
             编辑后的清晰图片或None
@@ -86,8 +92,14 @@ class GPTHandler:
         # 准备图片（调整尺寸和格式）
         image_bytes = self._prepare_image_for_edit(image, target_size)
         
-        # 使用固定提示词
-        prompt = self.FIXED_PROMPT
+        # 使用传入提示词（若为空则使用默认提示词）
+        if isinstance(prompt, str):
+            prompt = prompt.strip()
+            if not prompt:
+                prompt = None
+        else:
+            prompt = None
+        prompt_to_use = prompt or self.FIXED_PROMPT
         
         # 将尺寸转换为API需要的格式（如 "1024x1536"）
         size_str = f"{target_size[0]}x{target_size[1]}"
@@ -100,7 +112,7 @@ class GPTHandler:
             print(f"API格式: New API OpenAI 格式")
             print(f"目标尺寸: {target_size[0]}×{target_size[1]}")
             print(f"API尺寸参数: {size_str}")
-            print(f"固定提示词: {prompt}")
+            print(f"使用提示词: {prompt_to_use}")
             print(f"图片大小: {image_size} 字节")
             print(f"图片格式: PNG (RGB模式)")
             
@@ -142,7 +154,7 @@ class GPTHandler:
                     files = {
                         'image[]': ('image.png', image_file, 'image/png'),  # 文件上传
                         'model': (None, 'gpt-image-1'),
-                        'prompt': (None, prompt),
+                        'prompt': (None, prompt_to_use),
                         'quality': (None, 'high'),
                         'size': (None, size_str),
                         'response_format': (None, 'b64_json'),
@@ -361,8 +373,12 @@ class GPTHandler:
             
             return None
     
-    def enhance_image_with_ai(self, image: Image.Image, 
-                              target_size: Tuple[int, int] = None) -> Optional[Image.Image]:
+    def enhance_image_with_ai(
+        self,
+        image: Image.Image,
+        target_size: Tuple[int, int] = None,
+        prompt: Optional[str] = None
+    ) -> Optional[Image.Image]:
         """
         使用AI将图片变清晰
         直接调用API编辑现有图片
@@ -370,6 +386,7 @@ class GPTHandler:
         Args:
             image: 原始图片
             target_size: 目标尺寸，None则使用原图尺寸
+            prompt: 提示词（可选），为空则使用默认提示词
         
         Returns:
             编辑后的清晰图片或None
@@ -379,8 +396,11 @@ class GPTHandler:
         
         # 使用API编辑图片
         print("正在使用API编辑图片...")
-        print(f"固定提示词: {self.FIXED_PROMPT}")
-        clear_image = self.edit_image(image, target_size)
+        if prompt and isinstance(prompt, str) and prompt.strip():
+            print(f"使用提示词: {prompt.strip()}")
+        else:
+            print(f"使用默认提示词: {self.FIXED_PROMPT}")
+        clear_image = self.edit_image(image, target_size, prompt=prompt)
         
         return clear_image
 
