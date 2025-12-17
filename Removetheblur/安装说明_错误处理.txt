@@ -1,0 +1,71 @@
+========================================
+安装依赖错误处理指南
+========================================
+
+【常见错误及解决方法】
+
+1. SOCKS支持错误
+   错误信息: "Missing dependencies for SOCKS support"
+   解决方法:
+   - 方法1: 使用 install_manual.bat 逐个安装
+   - 方法2: 使用 install_powershell.ps1 (PowerShell脚本)
+   - 方法3: 手动执行命令:
+     pip install openai pillow python-dotenv numpy flask
+
+2. 网络连接问题
+   解决方法:
+   - 检查网络连接
+   - 使用国内镜像源（已自动使用清华镜像）
+   - 关闭VPN或代理
+
+3. 权限问题
+   解决方法:
+   - 以管理员身份运行 install.bat
+   - 或使用: pip install --user -r requirements.txt
+
+4. Python版本问题
+   要求: Python 3.8 或更高版本
+   检查版本: python --version
+
+【推荐安装方法】
+
+如果 install.bat 失败，按以下顺序尝试：
+
+1. 使用 install_manual.bat（逐个安装，更稳定）
+2. 使用 install_powershell.ps1（PowerShell用户）
+3. 手动安装（最可靠）:
+   
+   打开命令行，依次执行：
+   pip install openai
+   pip install pillow
+   pip install python-dotenv
+   pip install numpy
+   pip install flask
+
+【验证安装】
+
+安装完成后，运行以下命令验证：
+python -c "import openai; import PIL; import flask; import numpy; print('OK')"
+
+如果显示 "OK"，说明安装成功。
+
+【仍然无法安装？】
+
+1. 检查Python是否正确安装
+   python --version
+
+2. 检查pip是否可用
+   pip --version
+
+3. 尝试升级pip
+   python -m pip install --upgrade pip
+
+4. 检查网络连接
+   ping pypi.org
+
+========================================
+
+
+
+
+
