@@ -49,7 +49,7 @@ for endpoint in endpoints:
         image_bytes.seek(0)
         files = {
             'image': ('test.png', image_bytes, 'image/png'),
-            'model': (None, 'gpt-image-1'),
+            'model': (None, 'gpt-image-1.5'),
             'prompt': (None, 'test'),
             'size': (None, '1024x1024'),
             'n': (None, '1'),

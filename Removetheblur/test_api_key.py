@@ -57,23 +57,23 @@ except Exception as e:
         print(f"⚠️  其他错误: {e}")
     exit(1)
 
-# 测试 2: 检查是否可以访问 gpt-image-1 模型
+# 测试 2: 检查是否可以访问 gpt-image-1.5 模型
 print("\n" + "=" * 60)
-print("测试 2: 检查 gpt-image-1 模型访问权限")
+print("测试 2: 检查 gpt-image-1.5 模型访问权限")
 print("=" * 60)
 
 try:
     # 尝试获取模型信息
-    print("正在检查 gpt-image-1 模型...")
-    model = client.models.retrieve("gpt-image-1")
-    print(f"✓ 可以访问 gpt-image-1 模型")
+    print("正在检查 gpt-image-1.5 模型...")
+    model = client.models.retrieve("gpt-image-1.5")
+    print(f"✓ 可以访问 gpt-image-1.5 模型")
     print(f"  模型ID: {model.id}")
     if hasattr(model, 'owned_by'):
         print(f"  所有者: {model.owned_by}")
 except Exception as e:
     error_str = str(e).lower()
     if "404" in str(e) or "not found" in error_str:
-        print(f"⚠️  gpt-image-1 模型未找到")
+        print(f"⚠️  gpt-image-1.5 模型未找到")
         print("  这可能意味着:")
         print("  1. 模型名称不正确")
         print("  2. 您的账户没有访问该模型的权限")

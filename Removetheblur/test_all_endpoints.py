@@ -67,7 +67,7 @@ for endpoint in endpoints:
             # 测试POST请求
             files = {
                 'image': ('image.png', image_bytes, 'image/png'),
-                'model': (None, 'gpt-image-1'),
+                'model': (None, 'gpt-image-1.5'),
                 'prompt': (None, 'test'),
                 'size': (None, '1024x1024'),
             }

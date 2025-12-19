@@ -35,7 +35,7 @@ test_configs = [
         "method": "POST",
         "files": {
             'image': ('image.png', image_bytes, 'image/png'),
-            'model': (None, 'gpt-image-1'),
+            'model': (None, 'gpt-image-1.5'),
             'prompt': (None, 'test'),
             'size': (None, '1024x1024'),
             'n': (None, '1'),
@@ -49,7 +49,7 @@ test_configs = [
         "endpoint": "/images/edits",
         "method": "POST",
         "json": {
-            'model': 'gpt-image-1',
+            'model': 'gpt-image-1.5',
             'prompt': 'test',
             'size': '1024x1024',
             'n': 1,
@@ -66,7 +66,7 @@ test_configs = [
         "method": "POST",
         "files": {
             'image': ('image.png', image_bytes, 'image/png'),
-            'model': (None, 'gpt-image-1'),
+            'model': (None, 'gpt-image-1.5'),
             'prompt': (None, 'test'),
             'size': (None, '1024x1024'),
             'n': (None, '1'),

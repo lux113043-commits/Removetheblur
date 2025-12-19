@@ -1,0 +1,17 @@
+# OpenAI API 配置
+# 请将下面的 your_api_key_here 替换为你的实际 API Key
+OPENAI_API_KEY=your_api_key_here
+
+# 图片处理配置（可选）
+# 用于AI分析的最大图片尺寸，默认2048
+MAX_IMAGE_SIZE=2048
+
+# 输出图片质量（1-100），默认95
+OUTPUT_QUALITY=95
+
+# 代理配置（可选，如果需要使用代理访问OpenAI API）
+# 注意：只支持 HTTP/HTTPS 代理，不支持 SOCKS 代理
+# HTTPS_PROXY=http://127.0.0.1:7890
+# HTTP_PROXY=http://127.0.0.1:7890
+
+

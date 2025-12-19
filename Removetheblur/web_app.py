@@ -14,8 +14,14 @@ import threading
 import time
 from gpt_handler import GPTHandler
 from image_utils import resize_image_smart
+from task_db import TaskDB, TaskStatus
+from error_handler import ErrorHandler
+from result_saver import ResultSaver
 
 app = Flask(__name__)
+
+# 初始化任务数据库
+task_db = TaskDB()
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['OUTPUT_FOLDER'] = 'outputs'
 app.config['TEMP_FOLDER'] = 'temp_processed'  # 临时文件夹
@@ -246,19 +252,62 @@ def process_resize_batch(
             resize_status['total_files'] = 1
 
 
-def process_images_batch(input_folder, output_folder, session_id=None, prompt: str = None):
-    """批量处理图片"""
-    global processing_status
+def process_images_batch(input_folder, output_folder, session_id=None, prompt: str = None, task_id: str = None, resume: bool = False):
+    """
+    批量处理图片（支持断点续传）
+    
+    Args:
+        input_folder: 输入文件夹
+        output_folder: 输出文件夹
+        session_id: 会话ID
+        prompt: 提示词
+        task_id: 任务ID（如果为None则自动生成）
+        resume: 是否恢复未完成的任务
+    """
+    global processing_status, task_db
     
     try:
+        # 生成或使用传入的task_id
+        if not task_id:
+            import uuid
+            task_id = str(uuid.uuid4())
+        
         print(f"\n{'='*60}")
-        print(f"[线程启动] 开始批量处理图片")
+        if resume:
+            print(f"[线程启动] 恢复未完成任务")
+        else:
+            print(f"[线程启动] 开始批量处理图片")
+        print(f"任务ID: {task_id}")
         print(f"输入文件夹: {input_folder}")
         print(f"输出文件夹: {output_folder}")
         print(f"会话ID: {session_id}")
         if prompt:
             print(f"提示词: {prompt}")
         print(f"{'='*60}\n")
+        
+        # Phase 2: 创建任务（检查幂等性）
+        create_result = task_db.create_task(
+            task_id=task_id,
+            session_id=session_id or '',
+            input_folder=input_folder,
+            output_folder=output_folder,
+            temp_folder=output_folder,
+            prompt=prompt,
+            model='gpt-image-1.5',
+            check_idempotency=True
+        )
+        
+        # 如果任务已存在且已成功，可以直接返回结果
+        if create_result.get('result_available'):
+            print(f"✓ 任务已成功完成，结果可用: {create_result['task_id']}")
+            # 可以在这里加载已完成的图片结果
+            # 暂时继续处理流程，但可以优化为直接返回结果
+        
+        # 使用实际的任务ID（可能是新创建的或已存在的）
+        actual_task_id = create_result.get('task_id', task_id)
+        if actual_task_id != task_id:
+            print(f"⚠️  使用已存在的任务ID: {actual_task_id} (原ID: {task_id})")
+            task_id = actual_task_id
         
         processing_status['is_processing'] = True
         processing_status['errors'] = []
@@ -285,6 +334,7 @@ def process_images_batch(input_folder, output_folder, session_id=None, prompt: s
             print(f"✗ 错误: {error_msg}")
             print(f"请检查文件夹路径是否正确，以及文件夹中是否包含支持的图片格式")
             processing_status['errors'].append(error_msg)
+            task_db.update_task_status(task_id, TaskStatus.FAILED, error_message=error_msg)
             processing_status['is_processing'] = False
             processing_status['total_files'] = 0
             return
@@ -293,9 +343,22 @@ def process_images_batch(input_folder, output_folder, session_id=None, prompt: s
         processing_status['total_files'] = len(image_files)
         processing_status['current_file'] = ''
         
+        # 更新任务总文件数和状态为运行中
+        task_db.update_task_status(task_id, TaskStatus.RUNNING, total_files=len(image_files))
+        task_db.update_task_heartbeat(task_id)  # 发送初始心跳
+        
         # 创建输出文件夹
         output_path = Path(output_folder)
         output_path.mkdir(parents=True, exist_ok=True)
+        
+        # 如果是恢复任务，检查已处理的任务项
+        processed_images = set()
+        if resume:
+            existing_items = task_db.get_task_items(task_id)
+            for item in existing_items:
+                if item['status'] == 'completed' and item['modified_image']:
+                    processed_images.add(item['original_image'])
+            print(f"✓ 恢复任务：已处理 {len(processed_images)} 张图片，剩余 {len(image_files) - len(processed_images)} 张待处理")
         
         # 初始化agent，捕获初始化错误
         try:
@@ -317,54 +380,255 @@ def process_images_batch(input_folder, output_folder, session_id=None, prompt: s
         
         # 处理每张图片
         processing_status['latest_processed'] = []  # 清空之前的数据
-        for idx, image_file in enumerate(image_files, 1):
-            try:
+        processed_count = len(processed_images)  # 已处理数量（恢复任务时）
+        
+        # 启动心跳更新线程（每30秒更新一次）
+        import threading
+        heartbeat_stop = threading.Event()
+        
+        def heartbeat_worker():
+            while not heartbeat_stop.is_set() and processing_status.get('is_processing', False):
+                try:
+                    task_db.update_task_heartbeat(task_id)
+                except:
+                    pass
+                if heartbeat_stop.wait(10):  # Phase 4: 每10秒更新一次心跳（5-10秒范围）
+                    break
+        
+        heartbeat_thread = threading.Thread(target=heartbeat_worker, daemon=True)
+        heartbeat_thread.start()
+        
+        try:
+            for idx, image_file in enumerate(image_files, 1):
+                try:
+                    original_image_path = str(image_file)
+                    
+                    # 如果已处理过，跳过
+                    if original_image_path in processed_images:
+                        print(f"⏭️  跳过已处理的图片: {image_file.name}")
+                        continue
+                
                 processing_status['current_file'] = image_file.name
-                processing_status['processed_files'] = idx - 1
+                processing_status['processed_files'] = processed_count
                 
                 # 输出文件路径
                 output_file = output_path / f"{image_file.stem}_clear.jpg"
                 
-                # 处理图片
+                # 在数据库中创建任务项
+                task_db.add_task_item(
+                    task_id=task_id,
+                    original_image=original_image_path,
+                    status='processing'
+                )
+                
+                # Phase 3: 处理图片（传递task_id和task_db用于状态更新）
                 print(f"\n{'='*60}")
-                print(f"开始处理第 {idx}/{len(image_files)} 张图片: {image_file.name}")
+                print(f"开始处理第 {processed_count + 1}/{len(image_files)} 张图片: {image_file.name}")
                 print(f"{'='*60}")
+                
+                # Phase 4: 更新任务状态为RUNNING（在开始处理前）
+                task_db.update_task_status(task_id, TaskStatus.RUNNING)
+                task_db.update_task_heartbeat(task_id)
+                
                 result = agent.process_image(
-                    input_path=str(image_file),
+                    input_path=original_image_path,
                     output_path=str(output_file),
                     target_size=(1024, 1536),
-                    prompt=prompt
+                    prompt=prompt,
+                    task_id=task_id,
+                    task_db=task_db
                 )
                 
                 if result['success']:
+                    # Phase 5: 结果已原子性保存，获取保存信息
+                    output_path_final = result.get('output_path', str(output_file))
+                    output_size = result.get('output_size')
+                    output_sha256 = result.get('output_sha256')
+                    
+                    # 自动保存到输入文件夹下的"直接投入使用"子文件夹（也使用原子性保存）
+                    auto_save_folder = Path(input_folder) / "直接投入使用"
+                    auto_save_folder.mkdir(parents=True, exist_ok=True)
+                    auto_save_file = auto_save_folder / output_file.name
+                    
+                    # 读取已保存的图片并原子性保存到自动保存位置
+                    try:
+                        saved_image = Image.open(output_path_final)
+                        auto_success, auto_path, auto_size, auto_sha256 = ResultSaver.save_image_atomic(
+                            saved_image,
+                            str(auto_save_file),
+                            quality=OUTPUT_QUALITY
+                        )
+                        if auto_success:
+                            print(f"✓ 自动保存到: {auto_path}")
+                        else:
+                            print(f"⚠️  自动保存失败，但主文件已保存: {output_path_final}")
+                    except Exception as e:
+                        print(f"⚠️  自动保存时出错: {e}，但主文件已保存: {output_path_final}")
+                    
+                    # Phase 5: 更新数据库（写入output_path, output_sha256, output_size, finished_at）
+                    task_db.update_task_item(
+                        task_id=task_id,
+                        original_image=original_image_path,
+                        modified_image=output_path_final,
+                        status='completed',
+                        output_size=output_size,
+                        modified_sha256=output_sha256
+                    )
+                    
                     # 处理成功，添加到最新处理列表（只包含当前处理的这一张）
-                    processing_status['processed_files'] = idx
+                    processed_count += 1
+                    processing_status['processed_files'] = processed_count
                     processing_status['latest_processed'] = [{
-                        'original': str(image_file),
-                        'fixed': str(output_file),
+                        'original': original_image_path,
+                        'fixed': output_path_final,
                         'name': output_file.name,
                         'original_name': image_file.name
                     }]
+                    
+                    # Phase 5: 更新任务进度（写入output_path, output_sha256, output_size）
+                    # 注意：最后一张图片的状态将在循环结束后统一更新
+                    task_db.update_task_status(
+                        task_id=task_id,
+                        status=TaskStatus.RUNNING,
+                        processed_files=processed_count,
+                        output_path=output_path_final if processed_count == len(image_files) else None,
+                        output_size=output_size if processed_count == len(image_files) else None,
+                        output_sha256=output_sha256 if processed_count == len(image_files) else None
+                    )
+                    task_db.update_task_heartbeat(task_id)
+                    
                     print(f"✓ 成功处理: {image_file.name}")
                     # 短暂延迟，确保前端能获取到更新
                     time.sleep(0.1)
                 else:
-                    error_msg = f"{image_file.name}: {result.get('error', '处理失败')}"
+                    # Phase 6: 结构化失败处理
+                    error_msg = result.get('error', '处理失败')
                     print(f"✗ 处理失败: {error_msg}")
+                    
+                    # 分类错误
+                    error_details = ErrorHandler.format_error_details(
+                        Exception(error_msg)
+                    )
+                    
+                    failure_type = error_details['failure_type']
+                    error_code = error_details['error_code']
+                    is_retriable = error_details['is_retriable']
+                    
                     processing_status['errors'].append(error_msg)
+                    
+                    # 更新数据库：标记任务项为失败（结构化信息）
+                    task_db.update_task_item(
+                        task_id=task_id,
+                        original_image=original_image_path,
+                        status='failed',
+                        error_reason=error_msg
+                    )
+                    
                     # 即使失败也更新处理计数，避免卡在"处理中"
-                    processing_status['processed_files'] = idx
+                    processed_count += 1
+                    processing_status['processed_files'] = processed_count
+                    
+                    # Phase 6: 判断是否可重试
+                    if is_retriable:
+                        # 可重试：增加尝试次数，保持RUNNING状态
+                        task_db.increment_attempt_count(task_id)
+                        task_db.update_task_status(
+                            task_id=task_id,
+                            status=TaskStatus.RUNNING,
+                            processed_files=processed_count,
+                            error_code=error_code,
+                            failure_type=failure_type,
+                            error_message=error_msg
+                        )
+                        print(f"⚠️  错误可重试，已增加尝试次数: {error_code}")
+                    else:
+                        # 不可重试：记录错误但继续处理其他图片
+                        task_db.update_task_status(
+                            task_id=task_id,
+                            status=TaskStatus.RUNNING,
+                            processed_files=processed_count,
+                            error_code=error_code,
+                            failure_type=failure_type,
+                            error_message=error_msg
+                        )
+                        print(f"✗ 错误不可重试: {error_code}")
+                    
+                    task_db.update_task_heartbeat(task_id)
                 
             except Exception as e:
+                # Phase 6: 结构化异常处理
                 error_msg = f"{image_file.name}: {str(e)}"
                 print(f"✗ 处理异常: {error_msg}")
                 import traceback
                 traceback.print_exc()
+                
+                # 分类错误
+                error_details = ErrorHandler.format_error_details(e)
+                failure_type = error_details['failure_type']
+                error_code = error_details['error_code']
+                is_retriable = error_details['is_retriable']
+                
                 processing_status['errors'].append(error_msg)
+                
+                # 更新数据库：标记任务项为失败（结构化信息）
+                try:
+                    task_db.update_task_item(
+                        task_id=task_id,
+                        original_image=str(image_file),
+                        status='failed',
+                        error_reason=error_msg
+                    )
+                    processed_count += 1
+                    
+                    # Phase 6: 判断是否可重试
+                    if is_retriable:
+                        task_db.increment_attempt_count(task_id)
+                        task_db.update_task_status(
+                            task_id=task_id,
+                            status=TaskStatus.RUNNING,
+                            processed_files=processed_count,
+                            error_code=error_code,
+                            failure_type=failure_type,
+                            error_message=error_msg
+                        )
+                    else:
+                        task_db.update_task_status(
+                            task_id=task_id,
+                            status=TaskStatus.RUNNING,
+                            processed_files=processed_count,
+                            error_code=error_code,
+                            failure_type=failure_type,
+                            error_message=error_msg
+                        )
+                    task_db.update_task_heartbeat(task_id)
+                except Exception as db_error:
+                    print(f"更新数据库失败: {db_error}")
+        finally:
+            # 停止心跳线程
+            heartbeat_stop.set()
         
-        # 最终更新处理文件数
+        # Phase 5: 最终更新处理文件数和任务状态（写入finished_at）
         if processing_status['processed_files'] < len(image_files):
             processing_status['processed_files'] = len(image_files)
+        
+        # Phase 5: 更新任务为完成状态（写入finished_at）
+        if processing_status['errors']:
+            # Phase 6: 结构化失败处理
+            task_db.update_task_status(
+                task_id=task_id,
+                status=TaskStatus.FAILED,
+                processed_files=processed_count,
+                error_message=f"处理完成，但有 {len(processing_status['errors'])} 个错误",
+                error_code='PARTIAL_FAILURE',
+                failure_type='batch_processing_error'
+            )
+        else:
+            # Phase 5: 所有图片处理成功，更新为SUCCEEDED并写入finished_at
+            task_db.update_task_status(
+                task_id=task_id,
+                status=TaskStatus.SUCCEEDED,
+                processed_files=processed_count
+            )
         
     except Exception as e:
         import traceback
@@ -372,6 +636,18 @@ def process_images_batch(input_folder, output_folder, session_id=None, prompt: s
         print(f"严重错误: {error_msg}")
         traceback.print_exc()
         processing_status['errors'].append(error_msg)
+        
+        # 更新任务为失败状态
+        try:
+            task_db.update_task_status(
+                task_id=task_id,
+                status=TaskStatus.FAILED,
+                error_message=error_msg,
+                error_code='SYSTEM_ERROR',
+                failure_type='exception'
+            )
+        except:
+            pass
     finally:
         processing_status['is_processing'] = False
         processing_status['current_file'] = ''
@@ -458,6 +734,7 @@ def api_process():
     # 使用临时文件夹存储处理后的图片
     import uuid
     session_id = str(uuid.uuid4())[:8]
+    task_id = str(uuid.uuid4())  # 生成唯一任务ID
     temp_folder = os.path.join(app.config['TEMP_FOLDER'], session_id)
     os.makedirs(temp_folder, exist_ok=True)
     
@@ -477,40 +754,180 @@ def api_process():
     # 在后台线程中处理
     print(f"\n{'='*60}")
     print(f"[API] 收到处理请求")
+    print(f"任务ID: {task_id}")
     print(f"输入文件夹: {input_folder}")
     print(f"临时文件夹: {temp_folder}")
     print(f"会话ID: {session_id}")
     print(f"处理状态已设置为: is_processing=True")
     print(f"{'='*60}\n")
     
+    # 在后台线程中异步处理，立即返回响应给前端
     thread = threading.Thread(
         target=process_images_batch,
-        args=(input_folder, temp_folder, session_id, prompt),
+        args=(input_folder, temp_folder, session_id, prompt, task_id, False),
         name=f"ProcessThread-{session_id}"
     )
     thread.daemon = True
     thread.start()
     
-    print(f"✓ 处理线程已启动 (线程名: {thread.name})")
+    print(f"✓ 异步处理线程已启动 (线程名: {thread.name})")
     print(f"线程是否存活: {thread.is_alive()}")
+    print(f"✓ 立即返回响应给前端，处理将在后台异步进行")
     
-    # 等待一小段时间，确保线程真的启动了
-    import time
-    time.sleep(0.1)
-    print(f"线程启动后状态: 存活={thread.is_alive()}, 处理状态={processing_status['is_processing']}")
-    
+    # 立即返回响应，不等待处理完成（异步模式）
     return jsonify({
         'success': True,
-        'message': '开始处理',
+        'message': '任务已提交，正在后台异步处理',
+        'task_id': task_id,
         'session_id': session_id,
-        'temp_folder': temp_folder
+        'temp_folder': temp_folder,
+        'note': '请使用 /api/status 接口查询处理进度，任务已保存到数据库可断点续传'
     })
 
 
 @app.route('/api/status', methods=['GET'])
 def api_status():
-    """获取处理状态"""
-    return jsonify(processing_status)
+    """获取处理状态（异步查询接口）"""
+    # 添加CORS头，确保前端可以正常访问
+    response = jsonify(processing_status)
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Cache-Control', 'no-cache, no-store, must-revalidate')
+    response.headers.add('Pragma', 'no-cache')
+    response.headers.add('Expires', '0')
+    return response
+
+
+@app.route('/api/tasks', methods=['GET'])
+def api_tasks():
+    """获取所有任务列表"""
+    import sqlite3
+    try:
+        status_filter = request.args.get('status', '')  # 可选：pending, processing, completed, failed
+        
+        # 如果指定了状态过滤，需要从数据库查询
+        if status_filter:
+            conn = sqlite3.connect(task_db.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM tasks WHERE status = ? ORDER BY created_at DESC', (status_filter,))
+            tasks = [dict(row) for row in cursor.fetchall()]
+            conn.close()
+        else:
+            # 获取所有未完成的任务
+            tasks = task_db.get_unfinished_tasks()
+        
+        return jsonify({
+            'success': True,
+            'tasks': tasks,
+            'count': len(tasks)
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': f'获取任务列表失败: {str(e)}'
+        }), 500
+
+
+@app.route('/api/task/<task_id>', methods=['GET'])
+def api_task_detail(task_id):
+    """获取任务详情"""
+    try:
+        task = task_db.get_task(task_id)
+        if not task:
+            return jsonify({
+                'success': False,
+                'message': '任务不存在'
+            }), 404
+        
+        # 获取任务项
+        items = task_db.get_task_items(task_id)
+        
+        return jsonify({
+            'success': True,
+            'task': task,
+            'items': items,
+            'items_count': len(items)
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': f'获取任务详情失败: {str(e)}'
+        }), 500
+
+
+@app.route('/api/resume_task/<task_id>', methods=['POST'])
+def api_resume_task(task_id):
+    """恢复未完成的任务"""
+    global processing_status
+    
+    try:
+        # 检查任务是否存在
+        task = task_db.get_task(task_id)
+        if not task:
+            return jsonify({
+                'success': False,
+                'message': '任务不存在'
+            }), 404
+        
+            # 检查任务状态
+            if task['status'] not in (TaskStatus.PENDING, TaskStatus.SUBMITTED, TaskStatus.RUNNING, TaskStatus.ORPHANED, TaskStatus.FAILED):
+                return jsonify({
+                    'success': False,
+                    'message': f'任务状态为 {task["status"]}，无法恢复'
+                }), 400
+            
+            # 如果是孤儿任务，重置为PENDING状态
+            if task['status'] == TaskStatus.ORPHANED:
+                task_db.update_task_status(task_id, TaskStatus.PENDING)
+                task_db.increment_attempt_count(task_id)
+        
+        # 检查是否已有任务在处理
+        if processing_status['is_processing']:
+            return jsonify({
+                'success': False,
+                'message': '已有任务在处理中，请等待完成'
+            }), 400
+        
+        # 更新状态为处理中
+        processing_status['is_processing'] = True
+        processing_status['session_id'] = task['session_id']
+        processing_status['input_folder'] = task['input_folder']
+        processing_status['temp_folder'] = task['temp_folder']
+        processing_status['prompt'] = task.get('prompt', '')
+        processing_status['current_file'] = '正在恢复任务...'
+        processing_status['errors'] = []
+        processing_status['processed_files'] = task.get('processed_files', 0)
+        processing_status['latest_processed'] = []
+        
+        # 在后台线程中恢复任务
+        thread = threading.Thread(
+            target=process_images_batch,
+            args=(
+                task['input_folder'],
+                task['temp_folder'],
+                task['session_id'],
+                task.get('prompt'),
+                task_id,
+                True  # resume=True
+            ),
+            name=f"ResumeThread-{task_id}"
+        )
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'message': '任务恢复成功，正在继续处理',
+            'task_id': task_id,
+            'task': task
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'message': f'恢复任务失败: {str(e)}'
+        }), 500
 
 @app.route('/api/resize', methods=['POST'])
 def api_resize():
@@ -871,9 +1288,131 @@ def api_cleanup():
         }), 500
 
 
+def resume_unfinished_tasks():
+    """
+    Phase 7: 重启恢复逻辑（核心）
+    启动时恢复未完成的任务（包括孤儿任务）
+    """
+    global processing_status
+    
+    try:
+        # Phase 7: 查询SUBMITTED或RUNNING状态的任务
+        import sqlite3
+        conn = sqlite3.connect(task_db.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # 查询SUBMITTED或RUNNING状态的任务
+        cursor.execute('''
+            SELECT * FROM tasks
+            WHERE status IN (?, ?)
+            ORDER BY created_at ASC
+        ''', (TaskStatus.SUBMITTED, TaskStatus.RUNNING))
+        active_tasks = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
+        # Phase 7: 检查心跳超时（阈值：60秒）
+        from datetime import datetime, timedelta
+        threshold = datetime.now() - timedelta(seconds=60)
+        threshold_str = threshold.isoformat()
+        
+        orphaned_tasks = []
+        for task in active_tasks:
+            last_heartbeat = task.get('last_heartbeat_at')
+            if not last_heartbeat:
+                # 没有心跳记录，标记为孤儿
+                orphaned_tasks.append(task)
+            else:
+                try:
+                    heartbeat_time = datetime.fromisoformat(last_heartbeat)
+                    if heartbeat_time < threshold:
+                        orphaned_tasks.append(task)
+                except:
+                    orphaned_tasks.append(task)
+        
+        # 标记孤儿任务
+        if orphaned_tasks:
+            print(f"\n{'='*60}")
+            print(f"Phase 7: 发现 {len(orphaned_tasks)} 个孤儿任务（心跳超时>60秒）")
+            print(f"{'='*60}")
+            for task in orphaned_tasks:
+                task_id = task['id']
+                last_heartbeat = task.get('last_heartbeat_at', 'N/A')
+                print(f"  任务ID: {task_id}")
+                print(f"  状态: {task['status']}")
+                print(f"  最后心跳: {last_heartbeat}")
+                print(f"  进度: {task.get('processed_files', 0)}/{task.get('total_files', 0)}")
+                print(f"  → 标记为ORPHANED")
+                task_db.mark_task_orphaned(task_id)
+            print(f"{'='*60}\n")
+        
+        # 获取所有未完成的任务（包括新标记的孤儿任务）
+        unfinished_tasks = task_db.get_unfinished_tasks()
+        # 也包含孤儿任务
+        orphaned_all = task_db.get_orphaned_tasks(heartbeat_timeout_minutes=999999)
+        unfinished_tasks.extend(orphaned_all)
+        
+        if not unfinished_tasks:
+            print("✓ Phase 7: 没有未完成的任务需要恢复")
+            return
+        
+        print(f"\n{'='*60}")
+        print(f"Phase 7: 发现 {len(unfinished_tasks)} 个未完成的任务，准备恢复...")
+        print(f"{'='*60}\n")
+        
+        for task in unfinished_tasks:
+            print(f"恢复任务: {task['task_id']}")
+            print(f"  状态: {task['status']}")
+            print(f"  进度: {task['processed_files']}/{task['total_files']}")
+            print(f"  输入文件夹: {task['input_folder']}")
+            
+            # 检查是否已有任务在处理
+            if processing_status['is_processing']:
+                print(f"  ⚠️  已有任务在处理中，跳过此任务")
+                continue
+            
+            # 更新状态
+            processing_status['is_processing'] = True
+            processing_status['session_id'] = task['session_id']
+            processing_status['input_folder'] = task['input_folder']
+            processing_status['temp_folder'] = task['temp_folder']
+            processing_status['prompt'] = task.get('prompt', '')
+            processing_status['current_file'] = '正在恢复任务...'
+            processing_status['errors'] = []
+            processing_status['processed_files'] = task.get('processed_files', 0)
+            processing_status['latest_processed'] = []
+            
+            # 在后台线程中恢复任务
+            thread = threading.Thread(
+                target=process_images_batch,
+                args=(
+                    task['input_folder'],
+                    task['temp_folder'],
+                    task['session_id'],
+                    task.get('prompt'),
+                    task['task_id'],
+                    True  # resume=True
+                ),
+                name=f"ResumeThread-{task['task_id']}"
+            )
+            thread.daemon = True
+            thread.start()
+            
+            print(f"  ✓ 任务恢复线程已启动")
+            # 只恢复第一个任务，避免并发
+            break
+        
+        print(f"\n{'='*60}\n")
+    except Exception as e:
+        import traceback
+        print(f"✗ 恢复未完成任务时出错: {e}")
+        traceback.print_exc()
+
+
 if __name__ == '__main__':
     import webbrowser
     import time
+    import sqlite3
     
     port = 5000
     url = f'http://localhost:{port}'
@@ -882,6 +1421,12 @@ if __name__ == '__main__':
     print("图片背景修复Web服务")
     print("=" * 60)
     print(f"访问地址: {url}")
+    print("=" * 60)
+    
+    # 启动时恢复未完成的任务
+    print("\n正在检查未完成的任务...")
+    resume_unfinished_tasks()
+    
     print("按 Ctrl+C 停止服务")
     print("=" * 60)
     
