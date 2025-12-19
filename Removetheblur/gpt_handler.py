@@ -74,7 +74,9 @@ class GPTHandler:
         self,
         image: Image.Image,
         target_size: Tuple[int, int] = (1024, 1024),
-        prompt: Optional[str] = None
+        prompt: Optional[str] = None,
+        task_id: Optional[str] = None,
+        task_db=None
     ) -> Optional[Image.Image]:
         """
         使用API编辑图片，使其变清晰
@@ -85,6 +87,8 @@ class GPTHandler:
             image: 原始图片
             target_size: 目标尺寸 (width, height)，例如 (1024, 1536)
             prompt: 提示词（可选），为空则使用默认提示词
+            task_id: 任务ID（用于更新任务状态）
+            task_db: 任务数据库实例（用于保存request_id/response_id）
         
         Returns:
             编辑后的清晰图片或None
@@ -116,6 +120,15 @@ class GPTHandler:
             print(f"图片大小: {image_size} 字节")
             print(f"图片格式: PNG (RGB模式)")
             
+            # Phase 3: 提交GPT请求前，更新任务状态为SUBMITTED
+            if task_id and task_db:
+                from task_db import TaskStatus
+                task_db.update_task_status(
+                    task_id=task_id,
+                    status=TaskStatus.SUBMITTED
+                )
+                print(f"✓ 任务状态已更新为SUBMITTED（扣费边界）")
+            
             # 调用图像编辑API
             print("正在调用API...")
             print("提示: 图片处理可能需要较长时间（1-5分钟），请耐心等待...")
@@ -131,10 +144,14 @@ class GPTHandler:
             
             print(f"使用端点: {api_url}")
             
+            # 生成请求ID（用于追踪）
+            import uuid
+            request_id = str(uuid.uuid4())
+            
             # 根据正确的任务日志，需要将图片转换为 base64
             # 关键参数：
             # - image[]: base64 编码的图片（注意是 image[] 数组格式）
-            # - model: gpt-image-1
+            # - model: gpt-image-1.5
             # - prompt: 提示词
             # - quality: high
             # - size: 例如 1024x1024
@@ -153,7 +170,7 @@ class GPTHandler:
                 with open(tmp_file_path, 'rb') as image_file:
                     files = {
                         'image[]': ('image.png', image_file, 'image/png'),  # 文件上传
-                        'model': (None, 'gpt-image-1'),
+                        'model': (None, 'gpt-image-1.5'),
                         'prompt': (None, prompt_to_use),
                         'quality': (None, 'high'),
                         'size': (None, size_str),
@@ -162,10 +179,12 @@ class GPTHandler:
                     
                     headers = {
                         'Authorization': f'Bearer {self.api_key}',
+                        'X-Request-ID': request_id,  # 添加请求ID到请求头
                     }
                     
                     # 发送请求
                     print(f"开始发送API请求... (时间: {time.strftime('%H:%M:%S')})")
+                    print(f"请求ID: {request_id}")
                     print(f"请求格式: multipart/form-data (文件上传)")
                     print(f"图片参数名: image[] (文件格式)")
                     
@@ -175,6 +194,33 @@ class GPTHandler:
                         follow_redirects=True
                     ) as client:
                         response = client.post(api_url, files=files, headers=headers)
+                    
+                    # Phase 3: 如果API返回response_id，立即保存到数据库（即使后续失败）
+                    response_id = None
+                    if response.status_code == 200:
+                        try:
+                            response_data = response.json()
+                            # 尝试从响应中提取response_id（不同API可能有不同字段名）
+                            response_id = response_data.get('id') or response_data.get('response_id') or response_data.get('request_id')
+                            if response_id and task_id and task_db:
+                                from task_db import TaskStatus
+                                task_db.update_task_status(
+                                    task_id=task_id,
+                                    status=TaskStatus.SUBMITTED,  # 保持SUBMITTED状态
+                                    request_id=request_id,
+                                    response_id=response_id
+                                )
+                                print(f"✓ 已保存request_id和response_id到数据库")
+                        except:
+                            pass
+                    elif task_id and task_db:
+                        # 即使失败也保存request_id
+                        from task_db import TaskStatus
+                        task_db.update_task_status(
+                            task_id=task_id,
+                            status=TaskStatus.SUBMITTED,
+                            request_id=request_id
+                        )
                 
                 elapsed = time.time() - start_time
                 print(f"API请求完成，耗时: {elapsed:.2f} 秒 ({elapsed/60:.1f} 分钟)")
@@ -369,7 +415,7 @@ class GPTHandler:
                 print("  - 确认API服务器是否可访问")
                 print("  - 如果超时时间不够，可以进一步增加")
             elif "model" in error_str:
-                print("\n提示: 可能是模型名称错误，当前使用: gpt-image-1")
+                print("\n提示: 可能是模型名称错误，当前使用: gpt-image-1.5")
             
             return None
     

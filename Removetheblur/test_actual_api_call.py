@@ -65,7 +65,7 @@ for base_url, desc in base_urls:
             print(f"  正在调用 images.edit API...")
             with open(tmp_file_path, 'rb') as image_file:
                 response = client.images.edit(
-                    model="gpt-image-1",
+                    model="gpt-image-1.5",
                     image=image_file,
                     prompt="test",
                     size="1024x1024",

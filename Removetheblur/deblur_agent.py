@@ -9,6 +9,7 @@ from image_utils import (
 )
 from gpt_handler import GPTHandler
 from config import OUTPUT_QUALITY
+from result_saver import ResultSaver
 
 
 class DeblurAgent:
@@ -57,7 +58,13 @@ class DeblurAgent:
                 print(f"使用默认提示词: {self.gpt_handler.FIXED_PROMPT}")
             print("=" * 60)
             
-            clear_image = self.gpt_handler.edit_image(image, target_size=target_size, prompt=prompt)
+            clear_image = self.gpt_handler.edit_image(
+                image,
+                target_size=target_size,
+                prompt=prompt,
+                task_id=task_id,
+                task_db=task_db
+            )
             
             if clear_image is None:
                 return {
@@ -65,15 +72,27 @@ class DeblurAgent:
                     "error": "AI处理失败，未能生成清晰图片"
                 }
             
-            # 4. 保存结果
+            # Phase 5: 原子性保存结果
             print(f"\n正在保存结果到: {output_path}")
-            save_image(clear_image, output_path, quality=OUTPUT_QUALITY)
+            success, saved_path, output_size, output_sha256 = ResultSaver.save_image_atomic(
+                clear_image,
+                output_path,
+                quality=OUTPUT_QUALITY
+            )
+            
+            if not success:
+                return {
+                    "success": False,
+                    "error": "保存图片失败（原子性保存验证失败）"
+                }
             
             return {
                 "success": True,
                 "original_size": original_size,
                 "final_size": clear_image.size,
-                "output_path": output_path
+                "output_path": saved_path,
+                "output_size": output_size,
+                "output_sha256": output_sha256
             }
             
         except Exception as e:

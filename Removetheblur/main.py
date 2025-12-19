@@ -26,7 +26,7 @@ def main():
   python main.py photo.jpg -o result.jpg -s 2160x3240
 
 注意: 使用固定提示词"请把这个图变成全景深，整个画面中模糊虚化的地方变清晰，边缘锐利。"
-使用OpenAI Images API (gpt-image-1模型) 直接编辑现有图片，不带mask整图修复。
+使用OpenAI Images API (gpt-image-1.5模型) 直接编辑现有图片，不带mask整图修复。
         """
     )
     parser.add_argument(

@@ -641,19 +641,9 @@
             <div class="images-section" id="imagesSection" style="display: block;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 15px;">
                     <h2 style="margin: 0;">处理结果对比</h2>
-                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                        <button class="btn" onclick="selectAll()" id="selectAllBtn" style="padding: 10px 20px; font-size: 0.9em;" disabled>✓ 全选</button>
-                        <button class="btn" onclick="deselectAll()" id="deselectAllBtn" style="padding: 10px 20px; font-size: 0.9em;" disabled>✗ 取消全选</button>
-                        <button class="btn" onclick="saveSelected('ready')" id="saveReadyBtn" style="padding: 10px 25px; font-size: 0.95em; background: linear-gradient(135deg, #28a745 0%, #20c997 100%);" disabled>
-                            ✅ 保存到"直接投入使用"
-                        </button>
-                        <button class="btn" onclick="saveSelected('reprocess')" id="saveReprocessBtn" style="padding: 10px 25px; font-size: 0.95em; background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%);" disabled>
-                            🔄 保存到"需要再次处理"
-                        </button>
-                    </div>
                 </div>
-                <div id="selectedCount" style="margin-bottom: 15px; color: #5A9FD8; font-weight: bold; padding: 10px; background: #E6F4FD; border-radius: 8px;">
-                    等待处理完成...
+                <div id="autoSaveInfo" style="margin-bottom: 15px; color: #2e7d32; font-weight: bold; padding: 12px; background: #e8f5e9; border-radius: 8px; border-left: 4px solid #4caf50;">
+                    💾 图片将自动保存到输入文件夹下的"直接投入使用"子文件夹
                 </div>
                 
                 <!-- 文件管理和预览区域 -->
@@ -686,8 +676,7 @@
                                 <div style="text-align: left; color: #666; line-height: 2; max-width: 500px; margin: 0 auto;">
                                     <p>📋 <strong>左侧：</strong>图片缩略图列表，显示所有处理后的图片</p>
                                     <p>🖼️ <strong>右侧：</strong>点击缩略图后，这里显示原图与修复后的对比大图</p>
-                                    <p>✓ <strong>选择：</strong>通过缩略图前的复选框选择要保存的图片</p>
-                                    <p>💾 <strong>保存：</strong>点击"保存选中图片"按钮保存到输出文件夹</p>
+                                    <p>💾 <strong>自动保存：</strong>每生成一张图片将自动保存到输入文件夹下的"直接投入使用"子文件夹</p>
                                 </div>
                             </div>
                         </div>
@@ -705,8 +694,7 @@
                         <div style="text-align: left; color: #666; line-height: 1.8; max-width: 600px; margin: 0 auto;">
                             <p>1. 输入图片文件夹路径，点击"开始处理"</p>
                             <p>2. 处理完成后，左侧显示缩略图列表，右侧显示大图预览</p>
-                            <p>3. 勾选满意的图片，然后点击"保存选中图片"按钮</p>
-                            <p>4. 图片将保存到：<code style="background: #f0f0f0; padding: 2px 6px; border-radius: 4px;">输入文件夹/fixed_images/</code></p>
+                            <p>3. 每生成一张图片将自动保存到：<code style="background: #f0f0f0; padding: 2px 6px; border-radius: 4px;">输入文件夹/直接投入使用/</code></p>
                         </div>
                     </div>
                 </div>
@@ -836,7 +824,6 @@
         let resizeCheckInterval = null;
         let currentSessionId = '';
         let currentOutputFolder = '';
-        let selectedImages = new Set();
         let currentPreviewIndex = -1;
         let allImagesData = [];  // 存储所有图片数据
 
@@ -887,7 +874,7 @@
                         <div class="loading" style="margin: 0 auto 20px;"></div>
                         <p style="font-size: 0.95em; line-height: 1.6;">
                             <strong>正在处理中...</strong><br>
-                            请稍候，处理完成后图片将显示在这里
+                            每生成一张图片将自动保存，并显示在这里
                         </p>
                     </div>
                 `;
@@ -906,23 +893,15 @@
             }
             
             currentPreviewIndex = -1;
-            const selectedCount = document.getElementById('selectedCount');
-            if (selectedCount) {
-                selectedCount.textContent = '处理中，请等待...';
-                selectedCount.style.background = '#fff3e0';
-                selectedCount.style.color = '#e65100';
+            
+            // 更新自动保存提示
+            const autoSaveInfo = document.getElementById('autoSaveInfo');
+            if (autoSaveInfo) {
+                autoSaveInfo.textContent = '💾 正在处理中，每生成一张图片将自动保存到"直接投入使用"文件夹...';
+                autoSaveInfo.style.background = '#fff3e0';
+                autoSaveInfo.style.color = '#e65100';
+                autoSaveInfo.style.borderLeftColor = '#ff9800';
             }
-            
-            // 禁用按钮
-            const selectAllBtn = document.getElementById('selectAllBtn');
-            const deselectAllBtn = document.getElementById('deselectAllBtn');
-            const saveReadyBtn = document.getElementById('saveReadyBtn');
-            const saveReprocessBtn = document.getElementById('saveReprocessBtn');
-            
-            if (selectAllBtn) selectAllBtn.disabled = true;
-            if (deselectAllBtn) deselectAllBtn.disabled = true;
-            if (saveReadyBtn) saveReadyBtn.disabled = true;
-            if (saveReprocessBtn) saveReprocessBtn.disabled = true;
 
             // 发送处理请求
             console.log('=== 开始发送处理请求 ===');
@@ -964,7 +943,6 @@
                 if (data.success) {
                     currentSessionId = data.session_id || '';
                     currentOutputFolder = data.output_folder || '';
-                    selectedImages.clear();
                     console.log('开始状态检查，会话ID:', currentSessionId);
                     startStatusCheck();
                 } else {
@@ -1312,7 +1290,7 @@
 
             let consecutiveErrors = 0;
             const maxErrors = 10;  // 最多允许10次连续错误
-            let pollInterval = 3000;  // 初始轮询间隔3秒，避免连接过多
+            let pollInterval = 20000;  // 初始轮询间隔20秒，避免网络连接超时
             let isChecking = false;  // 防止并发请求
             
             const doStatusCheck = () => {
@@ -1329,7 +1307,7 @@
                     headers: {
                         'Cache-Control': 'no-cache'
                     },
-                    signal: AbortSignal.timeout(5000)  // 5秒超时
+                    signal: AbortSignal.timeout(30000)  // 30秒超时，确保20秒轮询不会超时
                 })
                 .then(response => {
                     if (!response.ok) {
@@ -1339,7 +1317,7 @@
                 })
                 .then(status => {
                     consecutiveErrors = 0;  // 重置错误计数
-                    pollInterval = 3000;  // 重置轮询间隔
+                    pollInterval = 20000;  // 重置轮询间隔为20秒
                     isChecking = false;
                     
                     updateStatus(status);
@@ -1385,7 +1363,7 @@
                     
                     // 如果连续错误，逐渐增加轮询间隔
                     if (consecutiveErrors > 3) {
-                        pollInterval = Math.min(pollInterval * 1.2, 10000);  // 最多10秒
+                        pollInterval = Math.min(pollInterval * 1.2, 30000);  // 最多30秒
                     }
                     
                     // 如果连续错误太多，停止轮询并提示用户
@@ -1416,8 +1394,8 @@
             // 立即执行第一次检查
             doStatusCheck();
             
-            // 设置定期检查（作为备用，但间隔更长）
-            statusCheckInterval = setInterval(doStatusCheck, Math.max(pollInterval * 2, 5000));
+            // 设置定期检查（作为备用，但间隔更长，20秒轮询）
+            statusCheckInterval = setInterval(doStatusCheck, pollInterval);
         }
 
         function updateStatus(status) {
@@ -1533,7 +1511,6 @@
                         <p>暂无处理结果</p>
                     </div>
                 `;
-                updateSelectedCount();
                 return;
             }
 
@@ -1544,16 +1521,12 @@
             // 生成缩略图列表
             thumbnailList.innerHTML = images.map((img, index) => {
                 const fixedUrl = `/api/image?path=${encodeURIComponent(img.fixed)}`;
-                const isSelected = selectedImages.has(img.name);
                 const isActive = index === currentPreviewIndex;
-                const imgNameEscaped = img.name.replace(/'/g, "\\'");
 
                 return `
                     <div class="thumbnail-item ${isActive ? 'active' : ''}" 
                          onclick="showPreview(${index})"
                          data-index="${index}">
-                        <input type="checkbox" class="thumbnail-checkbox" ${isSelected ? 'checked' : ''} 
-                               onclick="event.stopPropagation(); toggleImage('${imgNameEscaped}', ${index})">
                         <img src="${fixedUrl}" alt="${img.name}" 
                              onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2260%22 height=%2260%22%3E%3Crect fill=%22%23ddd%22 width=%2260%22 height=%2260%22/%3E%3Ctext x=%2230%22 y=%2230%22 text-anchor=%22middle%22 fill=%22%23999%22%3E图片%3C/text%3E%3C/svg%3E'">
                         <div class="thumbnail-info">
@@ -1567,19 +1540,15 @@
             if (images.length > 0 && currentPreviewIndex === -1) {
                 showPreview(0);
             }
-
-            updateSelectedCount();
             
-            // 启用按钮
-            const selectAllBtn2 = document.getElementById('selectAllBtn');
-            const deselectAllBtn2 = document.getElementById('deselectAllBtn');
-            const saveReadyBtn2 = document.getElementById('saveReadyBtn');
-            const saveReprocessBtn2 = document.getElementById('saveReprocessBtn');
-            
-            if (selectAllBtn2) selectAllBtn2.disabled = false;
-            if (deselectAllBtn2) deselectAllBtn2.disabled = false;
-            if (saveReadyBtn2) saveReadyBtn2.disabled = false;
-            if (saveReprocessBtn2) saveReprocessBtn2.disabled = false;
+            // 更新自动保存提示
+            const autoSaveInfo = document.getElementById('autoSaveInfo');
+            if (autoSaveInfo && images.length > 0) {
+                autoSaveInfo.textContent = `💾 已自动保存 ${images.length} 张图片到"直接投入使用"文件夹`;
+                autoSaveInfo.style.background = '#e8f5e9';
+                autoSaveInfo.style.color = '#2e7d32';
+                autoSaveInfo.style.borderLeftColor = '#4caf50';
+            }
         }
 
         function showPreview(index) {
@@ -1628,124 +1597,6 @@
             `;
         }
 
-        function toggleImage(imgName, index) {
-            if (selectedImages.has(imgName)) {
-                selectedImages.delete(imgName);
-            } else {
-                selectedImages.add(imgName);
-            }
-            updateSelectedCount();
-            
-            // 更新缩略图的复选框状态
-            const thumbnailItems = document.querySelectorAll('.thumbnail-item');
-            if (thumbnailItems[index]) {
-                const checkbox = thumbnailItems[index].querySelector('.thumbnail-checkbox');
-                if (checkbox) {
-                    checkbox.checked = selectedImages.has(imgName);
-                }
-            }
-        }
-
-        function selectAll() {
-            if (!allImagesData) return;
-            allImagesData.forEach(img => {
-                selectedImages.add(img.name);
-            });
-            updateThumbnailSelection();
-            updateSelectedCount();
-        }
-
-        function deselectAll() {
-            selectedImages.clear();
-            updateThumbnailSelection();
-            updateSelectedCount();
-        }
-
-        function updateThumbnailSelection() {
-            const thumbnailItems = document.querySelectorAll('.thumbnail-item');
-            thumbnailItems.forEach((item, index) => {
-                if (allImagesData && allImagesData[index]) {
-                    const imgName = allImagesData[index].name;
-                    const checkbox = item.querySelector('.thumbnail-checkbox');
-                    if (checkbox) {
-                        checkbox.checked = selectedImages.has(imgName);
-                    }
-                }
-            });
-        }
-
-        function updateSelectedCount() {
-            const count = selectedImages.size;
-            const countEl = document.getElementById('selectedCount');
-            if (countEl) {
-                if (count > 0) {
-                    countEl.textContent = `✓ 已选择 ${count} 张图片`;
-                    countEl.style.background = '#e8f5e9';
-                    countEl.style.color = '#2e7d32';
-                } else {
-                    const totalImages = allImagesData ? allImagesData.length : 0;
-                    if (totalImages > 0) {
-                        countEl.textContent = `未选择任何图片（保存时将保存所有 ${totalImages} 张图片）`;
-                        countEl.style.background = '#fff3e0';
-                        countEl.style.color = '#e65100';
-                    } else {
-                        countEl.textContent = '等待处理完成...';
-                        countEl.style.background = '#E6F4FD';
-                        countEl.style.color = '#5A9FD8';
-                    }
-                }
-            }
-        }
-
-        function saveSelected(folderType) {
-            if (!currentSessionId) {
-                alert('错误: 缺少会话ID');
-                return;
-            }
-
-            const selectedList = Array.from(selectedImages);
-            const folderTypeName = folderType === 'reprocess' ? '需要再次处理' : '直接投入使用';
-            const btnId = folderType === 'reprocess' ? 'saveReprocessBtn' : 'saveReadyBtn';
-            const saveBtn = document.getElementById(btnId);
-            if (!saveBtn) {
-                alert('错误: 找不到保存按钮');
-                return;
-            }
-            const originalText = saveBtn.textContent;
-            saveBtn.disabled = true;
-            saveBtn.textContent = '💾 保存中...';
-
-            fetch('/api/save', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    session_id: currentSessionId,
-                    selected_images: selectedList,
-                    folder_type: folderType
-                })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    alert(`✅ 保存成功！\n已保存 ${data.saved_count} 张图片到:\n${data.output_folder}`);
-                    if (data.errors && data.errors.length > 0) {
-                        console.warn('保存时的错误:', data.errors);
-                    }
-                } else {
-                    alert('保存失败: ' + data.message);
-                }
-                saveBtn.disabled = false;
-                saveBtn.textContent = originalText;
-            })
-            .catch(error => {
-                console.error('Save error:', error);
-                alert('保存时出错: ' + error.message);
-                saveBtn.disabled = false;
-                saveBtn.textContent = originalText;
-            });
-        }
 
         function updateImagesRealtime(newImages) {
             if (!newImages || newImages.length === 0) return;
